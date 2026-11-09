@@ -12,7 +12,7 @@ import shutil
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT
 OUTPUT = ROOT / ".site-build"
-SITE_URL = "https://fakeruzi.github.io/macos_winfile/"
+SITE_URL = "https://leaffiles.github.io/LeafFiles/"
 HAN = re.compile(r"[\u4e00-\u9fff]")
 
 
@@ -55,12 +55,12 @@ class LocalizedPage(HTMLParser):
                     if key == "content" and attributes.get("property") == "og:locale":
                         value = "en_US"
                     guides = {
-                        "https://github.com/fakerUZI/macos_winfile#功能": "features",
-                        "https://github.com/fakerUZI/macos_winfile#安装": "installation",
-                        "https://github.com/fakerUZI/macos_winfile#安卓功能准备": "android-setup",
+                        "https://github.com/LeafFiles/LeafFiles#功能": "features",
+                        "https://github.com/LeafFiles/LeafFiles#安装": "installation",
+                        "https://github.com/LeafFiles/LeafFiles#安卓功能准备": "android-setup",
                     }
                     if key == "href" and value in guides:
-                        value = "https://github.com/fakerUZI/macos_winfile/blob/main/README.en.md#" + guides[value]
+                        value = "https://github.com/LeafFiles/LeafFiles/blob/main/README.en.md#" + guides[value]
                 if attributes.get("data-language"):
                     if key == "aria-current":
                         continue
