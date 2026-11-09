@@ -1,6 +1,6 @@
 # LeafFiles 产品官网
 
-[访问官网](https://fakeruzi.github.io/macos_winfile/) · [终端安装](https://fakeruzi.github.io/macos_winfile/#quick-install) · [应用源码](https://github.com/fakerUZI/macos_winfile/tree/main)
+[访问官网](https://leaffiles.github.io/LeafFiles/) · [终端安装](https://leaffiles.github.io/LeafFiles/#quick-install) · [应用源码](https://github.com/LeafFiles/LeafFiles/tree/main)
 
 LeafFiles（原 WinFile）是免费开源的原生 macOS 文件管理器，提供空间清理、微信附件整理、MTP 安卓文件管理、多格式解压、多页签与个人收藏。当前介绍正式版 v2.2.1 的文件拖放修复，并保留 v2.2.0 的界面改进说明。
 
@@ -13,5 +13,5 @@ v2.2.1 修复当前目录拖入子文件夹时意外产生副本的问题，其�
 官网安装入口统一使用终端命令，不再提供 ZIP 直链。原一键安装命令、GitHub 地址与自动更新渠道保持不变，已有收藏与设置继续沿用。从 v2.0.1 起，安装目录为 LeafFiles.app，curl 脚本备份并迁移旧目录；应用内更新可能保留原目录名。部分历史截图仍使用 WinFile 名称。
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/fakerUZI/macos_winfile/main/install.sh | /bin/bash
+curl -fsSL https://raw.githubusercontent.com/LeafFiles/LeafFiles/main/install.sh | /bin/bash
 ```
