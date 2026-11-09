@@ -4,13 +4,13 @@
 
 [English](README.en.md) | **简体中文**
 
-[产品官网](https://fakeruzi.github.io/macos_winfile/) · [下载最新版](https://github.com/fakerUZI/macos_winfile/releases/latest)
+[产品官网](https://leaffiles.github.io/LeafFiles/) · [下载最新版](https://github.com/LeafFiles/LeafFiles/releases/latest)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/macOS-13.0%2B-black.svg)](#安装)
 [![Swift](https://img.shields.io/badge/Swift-5-orange.svg)](#技术栈)
 [![Tests](https://img.shields.io/badge/tests-1448%20passing-brightgreen.svg)](#测试)
-[![Release](https://img.shields.io/github/v/release/fakerUZI/macos_winfile)](../../releases/latest)
+[![Release](https://img.shields.io/github/v/release/LeafFiles/LeafFiles)](../../releases/latest)
 
 LeafFiles 面向日常文件浏览与整理：在多页签间切换目录，通过路径栏和分类查找文件，在同一界面查看空间占用、整理应用附件与管理安卓设备。支持简体中文、English 和 macOS 深色模式。
 
@@ -45,7 +45,7 @@ LeafFiles 将这些操作集中在一个原生 macOS 界面中，文件扫描与
 
 ## 项目状态与维护方向
 
-截至 2026 年 10 月 26 日，近期修复已完成回归验证，当前本机使用中暂未发现明显问题。LeafFiles 会继续围绕文件浏览、整理和管理打磨体验，后续以界面优化、性能提升和问题修复为主，不扩展与文件管理无关的功能。使用中遇到问题，欢迎通过 [Issues](https://github.com/fakerUZI/macos_winfile/issues) 反馈。
+截至 2026 年 10 月 26 日，近期修复已完成回归验证，当前本机使用中暂未发现明显问题。LeafFiles 会继续围绕文件浏览、整理和管理打磨体验，后续以界面优化、性能提升和问题修复为主，不扩展与文件管理无关的功能。使用中遇到问题，欢迎通过 [Issues](https://github.com/LeafFiles/LeafFiles/issues) 反馈。
 
 ## 本次更新：v2.4.0
 
@@ -77,7 +77,7 @@ LeafFiles 将这些操作集中在一个原生 macOS 界面中，文件扫描与
 - 分类扫描支持为每个类别保存多个指定目录，并可自定义结果上限或选择不限制。
 - 右键侧边栏分类打开独立的扫描设置弹窗，可配置单个类别或所有类别的默认值。
 - 已挂载的可见磁盘和 DMG 映像显示在左侧「位置」，可直接打开并右键弹出可弹出的卷。
-- 感谢 @xuchen521 在 [Issue #4](https://github.com/fakerUZI/macos_winfile/issues/4) 提出多路径扫描、可调上限及磁盘映像入口的建议。
+- 感谢 @xuchen521 在 [Issue #4](https://github.com/LeafFiles/LeafFiles/issues/4) 提出多路径扫描、可调上限及磁盘映像入口的建议。
 
 [v2.3.1 更新记录](docs/releases/v2.3.1.md) · [v2.3.0 更新记录](docs/releases/v2.3.0.md)
 
@@ -291,12 +291,12 @@ LeafFiles 附带 [7-Zip 26.04](https://www.7-zip.org/) 的官方 macOS 通用控
 
 ### 一键安装（推荐）
 
-软件已更名为 **LeafFiles**。原有一键安装命令继续有效；安装目录统一为 `LeafFiles.app`，安装脚本自动迁移旧的 `WinFile.app`。发布包 `WinFile.zip`、应用标识及仓库地址继续沿用，无需迁移个人设置。[名称与更新兼容说明](docs/branding.md)。
+软件已更名为 **LeafFiles**。原有一键安装命令继续有效；安装目录统一为 `LeafFiles.app`，安装脚本自动迁移旧的 `WinFile.app`。发布包 `WinFile.zip` 和应用标识继续沿用，无需迁移个人设置。仓库已迁移至 `LeafFiles/LeafFiles`，旧仓库地址和旧一键安装命令仍可使用。[名称与更新兼容说明](docs/branding.md)。
 
 退出正在运行的 LeafFiles，在「终端」粘贴：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/fakerUZI/macos_winfile/main/install.sh | /bin/bash
+curl -fsSL https://raw.githubusercontent.com/LeafFiles/LeafFiles/main/install.sh | /bin/bash
 ```
 
 直接下载最新通用安装包，支持 Apple Silicon 和 Intel，**不需要 Xcode 或 Homebrew**。脚本核对 SHA-256 和应用包签名后安装到 `/Applications`，保留旧版备份，不修改个人设置；失败会恢复旧应用。需要写入应用程序目录；没有权限时可先下载 [install.sh](install.sh)，再执行 `bash install.sh --dir "$HOME/Applications"`。
@@ -314,8 +314,8 @@ curl -fsSL https://raw.githubusercontent.com/fakerUZI/macos_winfile/main/install
 在自己机器上构建的产物**不携带隔离属性**，不会触发上面的拦截。
 
 ```bash
-git clone https://github.com/fakerUZI/macos_winfile.git
-cd macos_winfile
+git clone https://github.com/LeafFiles/LeafFiles.git
+cd LeafFiles
 
 ./native/build_native.sh            # 构建并安装到 /Applications
 ./native/build_native.sh --in-place # 只构建到项目目录
@@ -384,7 +384,7 @@ v1.4.1 修复功能验收：命令行逻辑 **1,162 项通过**，arm64 真实�
 ## 项目结构
 
 ```
-macos_winfile/
+LeafFiles/
 ├── native/
 │   ├── WinFile/                        # SwiftUI 源码
 │   │   ├── WinFileApp.swift            #   入口、菜单栏、命令

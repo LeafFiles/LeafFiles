@@ -4,13 +4,13 @@
 
 **English** | [简体中文](README.md)
 
-[Product website](https://fakeruzi.github.io/macos_winfile/en/) · [Latest release](https://github.com/fakerUZI/macos_winfile/releases/latest)
+[Product website](https://leaffiles.github.io/LeafFiles/en/) · [Latest release](https://github.com/LeafFiles/LeafFiles/releases/latest)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/macOS-13.0%2B-black.svg)](#installation)
 [![Swift](https://img.shields.io/badge/Swift-5-orange.svg)](#tech-stack)
 [![Tests](https://img.shields.io/badge/tests-1448%20passing-brightgreen.svg)](#testing)
-[![Release](https://img.shields.io/github/v/release/fakerUZI/macos_winfile)](../../releases/latest)
+[![Release](https://img.shields.io/github/v/release/LeafFiles/LeafFiles)](../../releases/latest)
 
 LeafFiles brings everyday file browsing and organization into one window. Switch between folders in tabs, find files with the path bar and categories, review storage usage, organize app attachments and manage Android files. Supports Simplified Chinese, English and macOS dark mode.
 
@@ -44,7 +44,7 @@ LeafFiles brings these tasks together in a native macOS interface, with file sca
 
 ## Project status and maintenance
 
-As of October 26, 2026, the recent fixes have passed regression checks, with no obvious issues found in local use. LeafFiles will stay focused on browsing, organizing and managing files. Future work will prioritize interface improvements, performance and bug fixes; unrelated features are outside the project’s scope. Please report any issues on [GitHub](https://github.com/fakerUZI/macos_winfile/issues).
+As of October 26, 2026, the recent fixes have passed regression checks, with no obvious issues found in local use. LeafFiles will stay focused on browsing, organizing and managing files. Future work will prioritize interface improvements, performance and bug fixes; unrelated features are outside the project’s scope. Please report any issues on [GitHub](https://github.com/LeafFiles/LeafFiles/issues).
 
 ## What’s new in v2.4.0
 
@@ -76,7 +76,7 @@ See the [v2.3.2 release notes](docs/releases/v2.3.2.md) and [v2.3.1 release note
 - Save multiple scan folders independently for each category and configure a result limit or remove it.
 - Right-click a sidebar category to open a dedicated scan settings dialog, with per-category and shared defaults.
 - Access mounted visible volumes, including DMG images, from the sidebar and eject supported volumes using their context menu.
-- Thanks to @xuchen521 for suggesting multiple scan paths, adjustable limits and easier access to disk images in [Issue #4](https://github.com/fakerUZI/macos_winfile/issues/4).
+- Thanks to @xuchen521 for suggesting multiple scan paths, adjustable limits and easier access to disk images in [Issue #4](https://github.com/LeafFiles/LeafFiles/issues/4).
 
 See the [v2.3.1 release notes](docs/releases/v2.3.1.md) and [v2.3.0 release notes](docs/releases/v2.3.0.md).
 
@@ -275,12 +275,12 @@ A full Xcode install is not required, and neither is a paid Apple Developer acco
 
 ### One-command install (recommended)
 
-The app is now named **LeafFiles**. The existing installation command remains valid. The installed bundle is `LeafFiles.app`; the installer migrates the old `WinFile.app`. The `WinFile.zip` assets, application identifier and repository URL remain compatible. See [name and update compatibility](docs/branding.md).
+The app is now named **LeafFiles**. The existing installation command remains valid. The installed bundle is `LeafFiles.app`; the installer migrates the old `WinFile.app`. The `WinFile.zip` assets and application identifier remain compatible. The repository has moved to `LeafFiles/LeafFiles`; the old repository URL and installation command remain available. See [name and update compatibility](docs/branding.md).
 
 Quit LeafFiles and paste this into Terminal:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/fakerUZI/macos_winfile/main/install.sh | /bin/bash
+curl -fsSL https://raw.githubusercontent.com/LeafFiles/LeafFiles/main/install.sh | /bin/bash
 ```
 
 Downloads the latest universal release for Apple Silicon and Intel; no Xcode or Homebrew required. The [installer](install.sh) checks SHA-256 and the bundle signature, installs into `/Applications`, preserves the previous app and leaves preferences intact. Failed replacement rolls back. If that directory is not writable, download the script and run `bash install.sh --dir "$HOME/Applications"`. Use `--no-open` to install without launching. Android uses bundled MTP; no extra tools or USB debugging are required.
@@ -298,8 +298,8 @@ The current release is ad-hoc signed and has not been notarized with a Developer
 Builds produced on your own machine **don't carry the quarantine flag**, so the block above doesn't apply.
 
 ```bash
-git clone https://github.com/fakerUZI/macos_winfile.git
-cd macos_winfile
+git clone https://github.com/LeafFiles/LeafFiles.git
+cd LeafFiles
 
 ./native/build_native.sh            # build and install to /Applications
 ./native/build_native.sh --in-place # build into the project folder only
@@ -382,7 +382,7 @@ The app binary itself also exposes a test entry point:
 ## Project Layout
 
 ```
-macos_winfile/
+LeafFiles/
 ├── native/
 │   ├── WinFile/                        # SwiftUI sources
 │   │   ├── WinFileApp.swift            #   entry point, menu bar, commands
