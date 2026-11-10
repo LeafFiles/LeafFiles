@@ -46,7 +46,15 @@ LeafFiles brings these tasks together in a native macOS interface, with file sca
 
 As of October 26, 2026, the recent fixes have passed regression checks, with no obvious issues found in local use. LeafFiles will stay focused on browsing, organizing and managing files. Future work will prioritize interface improvements, performance and bug fixes; unrelated features are outside the project’s scope. Please report any issues on [GitHub](https://github.com/LeafFiles/LeafFiles/issues).
 
-## What’s new in v2.4.0
+## What’s new in v2.5.0
+
+- Browse storage cleanup results by category; scan settings and software cleanup have been streamlined. Changed scan settings require a rescan.
+- Application and category scan settings use sidebar navigation, and long paths are easier to read.
+- The repository and website have moved to the LeafFiles organization; the old install command remains compatible.
+
+See the [v2.5.0 release notes](docs/releases/v2.5.0.md).
+
+### v2.4.0 update
 
 - Browse two existing or new tabs side by side. The active pane is outlined, and sorting and view controls apply to it.
 - Streamlined page controls and direct path entry, with Tab completion and click-away cancellation.

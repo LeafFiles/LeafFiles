@@ -1244,3 +1244,28 @@
 "split.open" = "Split View";
 "split.close" = "Exit Split View";
 "split.newTab" = "Split with New Tab";
+
+"path.showAll" = "Show Full Path";
+"cleanup.rescanNeeded" = "Scan settings changed. Scan again before cleaning.";
+"cleanup.candidateSummary" = "%d candidates · %@";
+"cleanup.filters" = "Filters";
+"cleanup.overview.short" = "Scan caches, attachments, installers, and large files.";
+"software.baiduScope.short" = "Scan downloads, caches, and logs; quit Baidu Netdisk before cleaning.";
+"software.cacheScope.short" = "Scan this app’s caches and logs.";
+"wechat.usage.compact" = "%d attachments · %@";
+
+"cleanup.rescanNeeded.short" = "Rescan to apply";
+"cleanup.defaultFolders.short" = "Downloads, Desktop, Documents, Movies, Pictures and Music";
+"cleanup.downloadLocation" = "Downloads folder";
+"cleanup.largeFileLocation" = "Large-file folder";
+"cleanup.chooseLocation" = "Choose…";
+"cleanup.restoreLocation" = "Restore default";
+"cleanup.locationHint" = "Choose a folder inside your home folder, outside Library.";
+
+"settings.sidebar.title" = "Sidebar";
+"settings.diagnostics.title" = "Diagnostics";
+
+"cleanup.settings.scopeTab" = "Scan scope";
+"cleanup.settings.rulesTab" = "Cleanup rules";
+
+"cleanup.options" = "Cleanup options";

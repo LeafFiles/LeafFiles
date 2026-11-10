@@ -1262,3 +1262,28 @@
 "split.open" = "左右分屏";
 "split.close" = "退出分屏";
 "split.newTab" = "新建标签页并分屏";
+
+"path.showAll" = "显示完整路径";
+"cleanup.rescanNeeded" = "扫描设置已更改，请重新扫描后再清理。";
+"cleanup.candidateSummary" = "候选 %d 项 · %@";
+"cleanup.filters" = "筛选";
+"cleanup.overview.short" = "扫描缓存、附件、安装包和大文件。";
+"software.baiduScope.short" = "扫描下载文件、缓存和日志；清理前请退出百度网盘。";
+"software.cacheScope.short" = "扫描当前软件的缓存和日志。";
+"wechat.usage.compact" = "附件 %d 项 · %@";
+
+"cleanup.rescanNeeded.short" = "重新扫描后生效";
+"cleanup.defaultFolders.short" = "下载、桌面、文稿、影片、图片和音乐";
+"cleanup.downloadLocation" = "下载目录";
+"cleanup.largeFileLocation" = "大文件扫描目录";
+"cleanup.chooseLocation" = "选择…";
+"cleanup.restoreLocation" = "恢复默认";
+"cleanup.locationHint" = "自选目录须位于个人文件夹内，不能选择 Library。";
+
+"settings.sidebar.title" = "侧边栏";
+"settings.diagnostics.title" = "诊断";
+
+"cleanup.settings.scopeTab" = "扫描范围";
+"cleanup.settings.rulesTab" = "清理规则";
+
+"cleanup.options" = "清理选项";
