@@ -12,7 +12,7 @@ curl -fsSL https://raw.githubusercontent.com/fakerUZI/macos_winfile/main/install
 
 | 项目 | 保留的值 |
 | --- | --- |
-| 仓库 | `fakerUZI/macos_winfile` |
+| 仓库 | `LeafFiles/LeafFiles`（旧仓库地址重定向） |
 | 安装脚本 | 主分支的 `install.sh` |
 | 应用目录与执行文件 | `LeafFiles.app/Contents/MacOS/WinFile`（执行文件保持兼容名称） |
 | 应用标识 | `local.winfile.mac` |
