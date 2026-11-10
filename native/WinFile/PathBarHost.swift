@@ -62,61 +62,46 @@ struct PathBarHost: View {
                     }
                 )
             } else {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 2) {
-                        ForEach(Array(crumbSegments.enumerated()), id: \.element.url) { index, segment in
-                            if index > 0 {
-                                Image(systemName: "chevron.compact.right")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.tertiary)
+                HStack(spacing: 2) {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 2) {
+                            ForEach(Array(crumbSegments.enumerated()), id: \.offset) { index, segment in
+                                if index > 0 { crumbSeparator }
+                                crumbButton(segment, isFirst: index == 0, isLast: index == crumbSegments.count - 1)
                             }
-                            Button {
-                                model.selectFolder(segment.url)
-                            } label: {
-                                HStack(spacing: 4) {
-                                    if index == 0 {
-                                        Image(systemName: segment.symbol)
-                                    }
-                                    Text(segment.title)
-                                        .fontWeight(index == crumbSegments.count - 1 ? .semibold : .regular)
-                                }
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 3)
-                            }
-                            .disabled(model.isWeChatCleanupView || model.isStorageCleanupView)
-                            .buttonStyle(.borderless)
-                            .background(
-                                RoundedRectangle(cornerRadius: 4)
-                                    .fill(index == crumbSegments.count - 1 ? Color.accentColor.opacity(0.12) : .clear)
-                            )
                         }
-                        Color.clear.frame(minWidth: 20, maxWidth: .infinity)
-                            .frame(height: 24)
-                            .contentShape(Rectangle())
-                            .onTapGesture { onBeginEditing() }
+                        .fixedSize(horizontal: true, vertical: false)
+
+                        ForEach(Array(stride(from: crumbSegments.count - 1, through: 1, by: -1)), id: \.self) { count in
+                            collapsedPath(visibleCount: count)
+                                .fixedSize(horizontal: true, vertical: false)
+                        }
+
+                        // If even the final folder name is too long, truncate it while
+                        // keeping the overflow menu and edit button accessible.
+                        collapsedPath(visibleCount: 1)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.trailing, model.isAndroidPath ? 0 : 28)
+                    .contentShape(Rectangle())
+                    .onTapGesture { onBeginEditing() }
+                    .help(WLocalizedString("path.hint", comment: "双击可编辑路径，支持补全"))
+
+                    if !model.isAndroidPath {
+                        Button(action: onBeginEditing) {
+                            Image(systemName: "pencil").foregroundStyle(.secondary)
+                                .frame(width: 26, height: 24)
+                        }
+                        .buttonStyle(.plain)
+                        .help(L("path.edit", "输入路径"))
+                        .accessibilityLabel(L("path.edit", "输入路径"))
+                        .accessibilityIdentifier("path.edit")
+                        .layoutPriority(1)
+                    }
                 }
-                .contentShape(Rectangle())
-                .onTapGesture(count: 2) { onBeginEditing() }
-                .help(WLocalizedString("path.hint", comment: "双击可编辑路径，支持补全"))
             }
         }
         .frame(maxWidth: .infinity)
         .frame(height: 26)
-        .overlay(alignment: .trailing) {
-            if !editingPath && !model.isAndroidPath {
-                Button(action: onBeginEditing) {
-                    Image(systemName: "pencil").foregroundStyle(.secondary)
-                        .frame(width: 26, height: 24)
-                }
-                .buttonStyle(.plain)
-                .help(L("path.edit", "输入路径"))
-                .accessibilityLabel(L("path.edit", "输入路径"))
-                .accessibilityIdentifier("path.edit")
-            }
-        }
         .overlay(alignment: .topLeading) {
             if editingPath && !suggestions.isEmpty {
                 PathSuggestionList(suggestions: suggestions) { suggestion in
@@ -127,6 +112,52 @@ struct PathBarHost: View {
                 .zIndex(10)
             }
         }
+    }
+
+    private func collapsedPath(visibleCount: Int) -> some View {
+        HStack(spacing: 2) {
+            Menu {
+                ForEach(Array(crumbSegments.enumerated()), id: \.offset) { _, segment in
+                    Button { model.selectFolder(segment.url) } label: {
+                        Label(segment.title, systemImage: segment.symbol)
+                    }
+                    .help(segment.url.path)
+                }
+            } label: {
+                Image(systemName: "ellipsis").frame(width: 24, height: 24)
+            }
+            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+            .help(L("path.showAll", "显示完整路径"))
+            .accessibilityLabel(L("path.showAll", "显示完整路径"))
+            .accessibilityIdentifier("path.showAll")
+            .disabled(model.isCleanupView)
+            ForEach(Array(crumbSegments.suffix(visibleCount).enumerated()), id: \.offset) { index, segment in
+                crumbSeparator
+                crumbButton(segment, isFirst: false, isLast: index == min(visibleCount, crumbSegments.count) - 1)
+            }
+        }
+    }
+
+    private var crumbSeparator: some View {
+        Image(systemName: "chevron.compact.right")
+            .font(.system(size: 10)).foregroundStyle(.tertiary)
+    }
+
+    private func crumbButton(_ segment: Crumb, isFirst: Bool, isLast: Bool) -> some View {
+        Button { model.selectFolder(segment.url) } label: {
+            HStack(spacing: 4) {
+                if isFirst { Image(systemName: segment.symbol) }
+                Text(segment.title).lineLimit(1).truncationMode(.middle)
+                    .fontWeight(isLast ? .semibold : .regular)
+            }
+            .padding(.horizontal, 6).padding(.vertical, 3)
+            .contentShape(Rectangle())
+        }
+        .disabled(model.isCleanupView)
+        .buttonStyle(.borderless)
+        .background(RoundedRectangle(cornerRadius: 4)
+            .fill(isLast ? Color.accentColor.opacity(0.12) : .clear))
+        .help(segment.url.path)
     }
 
     struct Crumb { let title: String; let url: URL; let symbol: String }

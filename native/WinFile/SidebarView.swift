@@ -301,6 +301,6 @@ struct CategoryScanSettingsSheet: View {
             Divider()
             CategoryScanSettingsView(preferences: preferences, category: category)
         }
-        .frame(width: 520, height: 560)
+        .frame(width: 760, height: 560)
     }
 }

@@ -60,6 +60,8 @@ final class StorageCleanupModel: ObservableObject {
         var page = 0
         var pages = 1
         var bytes: Int64 = 0
+        var kindBytes: [String: Int64] = [:]
+        var kindCounts: [String: Int] = [:]
     }
     static let pageSize = 200
     @Published private(set) var result = StorageCleanupScanResult()
@@ -67,6 +69,7 @@ final class StorageCleanupModel: ObservableObject {
     @Published private(set) var isScanning = false
     @Published private(set) var isCleaning = false
     @Published private(set) var hasScanned = false
+    @Published private(set) var scanNeedsRefresh = false
     @Published private(set) var progress = StorageCleanupProgress()
     @Published private(set) var cleaningIndex = 0
     @Published var selection = Set<String>()
@@ -75,9 +78,9 @@ final class StorageCleanupModel: ObservableObject {
     @Published var owner = "all" { didSet { if owner != oldValue { filtersChanged() } } }
     @Published var sort = "size" { didSet { rebuild() } }
     @Published var confirmsTrash = false
-    @Published var scanScope = "all"
-    @Published var minimumAgeDays = 7
-    @Published var minimumLargeMB = 100
+    @Published var scanScope = "all" { didSet { if scanScope != oldValue { invalidateScanSettings() } } }
+    @Published var minimumAgeDays = 7 { didSet { if minimumAgeDays != oldValue { invalidateScanSettings() } } }
+    @Published var minimumLargeMB = 100 { didSet { if minimumLargeMB != oldValue { invalidateScanSettings() } } }
     @Published private(set) var largeFolder: URL?
     @Published private(set) var downloadFolder: URL?
     @Published private(set) var ignored: [URL]
@@ -153,6 +156,7 @@ final class StorageCleanupModel: ObservableObject {
         result = StorageCleanupScanResult(); display = Display(); progress = StorageCleanupProgress()
         selection = []; pendingFiles = []; confirmsTrash = false; configurationAtScan = nil
         hasScanned = false; message = nil; search = ""; category = "all"; owner = "all"; scanScope = "all"
+        scanNeedsRefresh = false
         return true
     }
     var configuration: StorageCleanupConfiguration {
@@ -216,10 +220,25 @@ final class StorageCleanupModel: ObservableObject {
         let pages = max(1, (filtered.count + Self.pageSize - 1) / Self.pageSize)
         let page = min(max(0, page), pages - 1)
         let start = page * Self.pageSize
+        var kindBytes: [String: Int64] = [:]
+        var kindCounts: [String: Int] = [:]
+        for file in result.files {
+            kindBytes[file.rule.kind.rawValue, default: 0] += file.size
+            kindCounts[file.rule.kind.rawValue, default: 0] += 1
+        }
         display = Display(filtered: filtered, rows: Array(filtered.dropFirst(start).prefix(Self.pageSize)),
-                          page: page, pages: pages, bytes: filtered.reduce(0) { $0 + $1.size })
+                          page: page, pages: pages, bytes: filtered.reduce(0) { $0 + $1.size },
+                          kindBytes: kindBytes, kindCounts: kindCounts)
     }
-    func selectAll() { selection = Set(display.filtered.map(\.id)) }
+    func selectAll() {
+        guard !scanNeedsRefresh else { return }
+        selection = Set(display.filtered.map(\.id))
+    }
+    private func invalidateScanSettings() {
+        guard hasScanned || isScanning else { return }
+        scanNeedsRefresh = true
+        discardPendingTrash()
+    }
     @discardableResult
     func chooseFolder(_ url: URL) -> Bool {
         guard !busy else { return false }
@@ -232,8 +251,7 @@ final class StorageCleanupModel: ObservableObject {
             downloadFolder = target
             defaults.set(target.path, forKey: Self.downloadFolderKey)
             resetDownloadScan()
-        } else { largeFolder = target }
-        hasScanned = false
+        } else if largeFolder != target { largeFolder = target; invalidateScanSettings() }
         return true
     }
     func useDefaultDownloadFolders() {
@@ -245,8 +263,12 @@ final class StorageCleanupModel: ObservableObject {
         result = StorageCleanupScanResult(); display = Display(); progress = StorageCleanupProgress()
         selection = []; pendingFiles = []; confirmsTrash = false; configurationAtScan = nil; hasScanned = false
         search = ""; category = "all"; owner = "all"; scanScope = "all"; message = nil
+        scanNeedsRefresh = false
     }
-    func useDefaultFolders() { guard !busy else { return }; largeFolder = nil; hasScanned = false }
+    func useDefaultFolders() {
+        guard !busy, largeFolder != nil else { return }
+        largeFolder = nil; invalidateScanSettings()
+    }
     func ignore(_ url: URL) {
         guard !busy else { return }
         let url = url.standardizedFileURL
@@ -258,7 +280,7 @@ final class StorageCleanupModel: ObservableObject {
     func removeIgnore(_ url: URL) {
         guard !busy else { return }
         ignored.removeAll { $0 == url }; defaults.set(ignored.map(\.path), forKey: Self.ignoreKey)
-        hasScanned = false
+        invalidateScanSettings()
     }
     func cancel() { task?.cancel() }
     func scan() {
@@ -266,7 +288,7 @@ final class StorageCleanupModel: ObservableObject {
         let id = UUID(); generation = id
         let config = configuration; configurationAtScan = config
         let running = StorageCleanupService.runningBundleIDs()
-        isScanning = true; message = nil; selection = []; progress = StorageCleanupProgress()
+        isScanning = true; scanNeedsRefresh = false; message = nil; selection = []; progress = StorageCleanupProgress()
         task = Task { [weak self] in
             let worker = Task.detached(priority: .utility) {
                 StorageCleanupService.scan(config, running: running, cancelled: { Task.isCancelled }) { value in
@@ -282,7 +304,7 @@ final class StorageCleanupModel: ObservableObject {
         }
     }
     func requestTrash(_ ids: Set<String>? = nil) {
-        guard !busy else { return }
+        guard !busy, !scanNeedsRefresh else { return }
         if let ids { selection = ids }
         pendingFiles = selectedFiles
         confirmsTrash = !pendingFiles.isEmpty
@@ -292,7 +314,7 @@ final class StorageCleanupModel: ObservableObject {
         selection = []; pendingFiles = []; confirmsTrash = false
     }
     func clean() {
-        guard !busy, !FileOperationHistory.shared.isBusy, !pendingFiles.isEmpty, var config = configurationAtScan else { return }
+        guard !busy, !scanNeedsRefresh, !FileOperationHistory.shared.isBusy, !pendingFiles.isEmpty, var config = configurationAtScan else { return }
         let files = pendingFiles; pendingFiles = []
         // The confirmed scan fixes the eligibility settings; the current ignore
         // list can only further restrict that plan.

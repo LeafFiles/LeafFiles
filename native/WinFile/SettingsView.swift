@@ -14,18 +14,36 @@ struct SettingsView: View {
     @AppStorage("Settings.SelectedPane") private var selectedPane = "general"
 
     var body: some View {
-        TabView(selection: $selectedPane) {
-            general
-                .tabItem { Label(WLocalizedString("settings.general", comment: "通用"), systemImage: "gearshape") }
-                .tag("general")
-            privacy
-                .tabItem { Label(WLocalizedString("settings.privacy", comment: "隐私与授权"), systemImage: "lock.shield") }
-                .tag("privacy")
-            about
-                .tabItem { Label(WLocalizedString("settings.about", comment: "关于"), systemImage: "info.circle") }
-                .tag("about")
+        HStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 4) {
+                settingsNavigationItem("general", title: L("settings.general", "通用"), icon: "gearshape")
+                settingsNavigationItem("privacy", title: L("settings.privacy", "隐私与授权"), icon: "lock.shield")
+                settingsNavigationItem("sidebar", title: L("settings.sidebar.title", "侧边栏"), icon: "sidebar.left")
+                settingsNavigationItem("associations", title: L("settings.assoc.title", "默认打开方式"), icon: "arrow.up.forward.app")
+                settingsNavigationItem("diagnostics", title: L("settings.diagnostics.title", "诊断"), icon: "stethoscope")
+                settingsNavigationItem("about", title: L("settings.about", "关于"), icon: "info.circle")
+                Spacer(minLength: 0)
+            }
+            .padding(.top, 24)
+            .frame(width: 190)
+            .frame(maxHeight: .infinity)
+            .background(Color(nsColor: .controlBackgroundColor))
+
+            Divider()
+            Group {
+                switch selectedPane {
+                case "privacy": privacy
+                case "sidebar": sidebarSettings
+                case "associations": associationsSettings
+                case "diagnostics": diagnosticsSettings
+                case "about": about
+                default: general
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(Color(nsColor: .windowBackgroundColor))
         }
-        .frame(width: 480, height: 320)
+        .frame(width: 760, height: 560)
         .onAppear { if selectedPane == "categoryScan" { selectedPane = "general" } }
         .sheet(isPresented: $chooseStartFolder) {
             FolderPickerSheet(initialDirectory: startFolderPath.isEmpty ? nil : URL(fileURLWithPath: startFolderPath),
@@ -36,106 +54,115 @@ struct SettingsView: View {
         .sheet(isPresented: $chooseFavorites) { FolderPickerSheet { engine.addFolders($0) } }
     }
 
-    private var general: some View {
-        Form {
-            Section {
-                Picker(L("settings.language", "语言"), selection: $localization.language) {
-                    Text(L("settings.language.system", "跟随系统")).tag(AppLanguage.system)
-                    Text("简体中文").tag(AppLanguage.simplifiedChinese)
-                    Text("English").tag(AppLanguage.english)
-                }
-                Text(L("settings.language.hint", "切换后立即生效；不支持的系统语言使用英文。"))
-                    .font(.caption).foregroundStyle(.secondary)
-                Picker(L("icon.settings.label", "Dock 图标"), selection: Binding(
-                    get: { iconPreferences.choice },
-                    set: { iconPreferences.select($0) })) {
-                    Text(L("icon.settings.original", "经典黄色")).tag(AppIconChoice.original)
-                    Text(L("icon.settings.green", "绿色叶子")).tag(AppIconChoice.green)
-                }
-                Text(L("icon.settings.hint", "仅在应用运行时改变 Dock 图标；启动台和访达显示绿色图标。"))
-                    .font(.caption).foregroundStyle(.secondary)
-                Picker(WLocalizedString("settings.layout", comment: "默认视图"), selection: $layoutRaw) {
-                    Text(WLocalizedString("layout.details", comment: "详细信息")).tag(ViewLayout.details.rawValue)
-                    Text(WLocalizedString("layout.icons", comment: "大图标")).tag(ViewLayout.icons.rawValue)
-                }
-                Toggle(WLocalizedString("settings.showHidden", comment: "显示隐藏文件"), isOn: $showHidden)
-                Toggle(L("update.automatic", "每次启动时检查更新"), isOn: Binding(
-                    get: { updater.automaticallyChecksForUpdates },
-                    set: { updater.setAutomaticallyChecksForUpdates($0) }
-                ))
-                Text(L("update.hint", "发现新版本时提示安装；可以跳过此版本或下次再说。"))
-                    .font(.caption).foregroundStyle(.secondary)
+    private func settingsNavigationItem(_ id: String, title: String, icon: String) -> some View {
+        let selected = selectedPane == id
+        return Button { selectedPane = id } label: {
+            HStack(spacing: 12) {
+                Image(systemName: icon).font(.system(size: 16)).frame(width: 22)
+                Text(title).font(.system(size: 14, weight: selected ? .semibold : .regular))
+                Spacer(minLength: 0)
             }
+            .foregroundStyle(selected ? Color.white : Color.primary)
+            .padding(.horizontal, 18)
+            .frame(height: 42)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(selected ? Color.accentColor : Color.clear)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
 
-            Section {
-                HStack {
-                    Text(WLocalizedString("settings.startFolder", comment: "启动时打开"))
-                    Spacer()
-                    Text(startFolderPath.isEmpty
-                         ? WLocalizedString("settings.startFolder.default", comment: "上次使用的位置")
-                         : (startFolderPath as NSString).abbreviatingWithTildeInPath)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Button(WLocalizedString("settings.choose", comment: "选择…")) {
-                        chooseStartFolder = true
+    private func settingsRow<Control: View>(
+        _ title: String, detail: String? = nil, @ViewBuilder control: () -> Control
+    ) -> some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .center, spacing: 20) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title).font(.system(size: 14))
+                    if let detail {
+                        Text(detail).font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-
-                    Button(WLocalizedString("settings.clear", comment: "清除")) { startFolderPath = "" }
-                        .disabled(startFolderPath.isEmpty)
                 }
+                Spacer(minLength: 12)
+                control()
+            }
+            .padding(.vertical, 14)
+            Divider()
+        }
+    }
+
+    private var general: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                Text(L("settings.general", "通用")).font(.title3.weight(.semibold))
+                    .padding(.bottom, 18)
+                Divider()
+                settingsRow(L("settings.language", "语言"), detail: L("settings.language.hint", "切换后立即生效；不支持的系统语言使用英文。")) {
+                    Picker(L("settings.language", "语言"), selection: $localization.language) {
+                        Text(L("settings.language.system", "跟随系统")).tag(AppLanguage.system)
+                        Text("简体中文").tag(AppLanguage.simplifiedChinese)
+                        Text("English").tag(AppLanguage.english)
+                    }.labelsHidden().frame(width: 135)
+                }
+                settingsRow(L("icon.settings.label", "Dock 图标"), detail: L("icon.settings.hint", "仅在应用运行时改变 Dock 图标；启动台和访达显示绿色图标。")) {
+                    Picker(L("icon.settings.label", "Dock 图标"), selection: Binding(
+                        get: { iconPreferences.choice }, set: { iconPreferences.select($0) })) {
+                        Text(L("icon.settings.original", "经典黄色")).tag(AppIconChoice.original)
+                        Text(L("icon.settings.green", "绿色叶子")).tag(AppIconChoice.green)
+                    }.labelsHidden().frame(width: 135)
+                }
+                settingsRow(L("settings.layout", "默认视图")) {
+                    Picker(L("settings.layout", "默认视图"), selection: $layoutRaw) {
+                        Text(L("layout.details", "详细信息")).tag(ViewLayout.details.rawValue)
+                        Text(L("layout.icons", "大图标")).tag(ViewLayout.icons.rawValue)
+                    }.labelsHidden().frame(width: 135)
+                }
+                settingsRow(L("settings.showHidden", "显示隐藏文件")) {
+                    Toggle(L("settings.showHidden", "显示隐藏文件"), isOn: $showHidden).labelsHidden().toggleStyle(.switch)
+                }
+                settingsRow(L("update.automatic", "每次启动时检查更新"), detail: L("update.hint", "发现新版本时提示安装；可以跳过此版本或下次再说。")) {
+                    Toggle(L("update.automatic", "每次启动时检查更新"), isOn: Binding(
+                        get: { updater.automaticallyChecksForUpdates },
+                        set: { updater.setAutomaticallyChecksForUpdates($0) })).labelsHidden().toggleStyle(.switch)
+                }
+                settingsRow(L("settings.startFolder", "启动时打开"), detail: startFolderPath.isEmpty
+                            ? L("settings.startFolder.default", "上次使用的位置")
+                            : (startFolderPath as NSString).abbreviatingWithTildeInPath) {
+                    HStack {
+                        Button(L("settings.choose", "选择…")) { chooseStartFolder = true }
+                        Button(L("settings.clear", "清除")) { startFolderPath = "" }.disabled(startFolderPath.isEmpty)
+                    }
+                }
+            }
+            .padding(.horizontal, 32).padding(.vertical, 28)
+        }
+    }
+
+    private var privacy: some View {
+        Form {
+            Section(L("settings.privacy", "隐私与授权")) {
+                Text(L("settings.local.explain", "本应用为本地使用形态，未启用沙盒，可直接访问整个磁盘（包括其它应用的数据目录）。"))
+                    .font(.callout).fixedSize(horizontal: false, vertical: true)
             }
         }
         .formStyle(.grouped)
     }
 
-    private var privacy: some View {
+    private var sidebarSettings: some View {
+        Form { sidebarSection }.formStyle(.grouped)
+    }
+
+    private var associationsSettings: some View {
+        Form { associationsSection }.formStyle(.grouped)
+    }
+
+    private var diagnosticsSettings: some View {
         Form {
-            Section {
-                Text(L("settings.local.explain",
-                       "本应用为本地使用形态，未启用沙盒，可直接访问整个磁盘（包括其它应用的数据目录）。"))
-                    .font(.callout)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Section {
-                LabeledContent(L("settings.folders.count", "常用文件夹"),
-                               value: "\(engine.authorizedRoots.count)")
-                ForEach(engine.authorizedRoots, id: \.path) { url in
-                    HStack {
-                        Image(systemName: "folder")
-                        Text((url.path as NSString).abbreviatingWithTildeInPath)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Spacer()
-                        Button {
-                            engine.removeFolder(url)
-                        } label: {
-                            Image(systemName: "minus.circle")
-                        }
-                        .buttonStyle(.borderless)
-                        .help(L("settings.folders.remove", "从列表移除"))
-                    }
-                }
-                Button(L("settings.folders.add", "添加文件夹…")) {
-                    chooseFavorites = true
-                }
-
-                Button(role: .destructive) {
-                    engine.removeAllAddedFolders()
-                } label: {
-                    Text(L("settings.folders.clear", "清空列表"))
-                }
-                .disabled(engine.authorizedRoots.isEmpty)
-            }
-
-            sidebarSection
-
-            associationsSection
-
-            Section {
+            Section(L("settings.diagnostics.title", "诊断")) {
                 Text(L("settings.diagnostics.explain", "遇到页签点击没反应等问题时，可先复现一次，再把日志发给我定位。"))
-                    .font(.callout)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .font(.callout).fixedSize(horizontal: false, vertical: true)
                 HStack {
                     Button(L("settings.diagnostics.open", "打开诊断日志")) {
                         TabDiagnostics.shared.flush()
@@ -150,8 +177,7 @@ struct SettingsView: View {
                     }
                 }
             }
-        }
-        .formStyle(.grouped)
+        }.formStyle(.grouped)
     }
 
     private var about: some View {
@@ -233,76 +259,119 @@ struct CategoryScanSettingsView: View {
         guard let number = Int(limitText), (1...1_000_000).contains(number) else { return nil }
         return number
     }
-    var body: some View {
-        Form {
-            Section(L("category.settings.target", "配置类别")) {
-                Picker(L("category.settings.target", "配置类别"), selection: $selectedCategoryRaw) {
-                    Text(L("category.settings.all", "所有类别的默认设置")).tag("")
-                    ForEach(FileCategory.sidebarOrder) { category in
-                        Text(category.localizedName).tag(category.rawValue)
-                    }
-                }
-                if let category = selectedCategory {
-                    Toggle(L("category.settings.override", "为此类别单独设置"), isOn: Binding(
-                        get: { !isInherited },
-                        set: { enabled in
-                            if enabled { preferences.setRule(preferences.configuration.defaultRule, for: category) }
-                            else { preferences.useDefault(for: category) }
-                        }))
-                    if isInherited {
-                        Text(L("category.settings.inherited", "当前使用所有类别的默认设置。"))
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
+    private func categoryItem(_ raw: String, title: String, icon: String) -> some View {
+        let selected = selectedCategoryRaw == raw
+        return Button { selectedCategoryRaw = raw } label: {
+            HStack(spacing: 10) {
+                Image(systemName: icon).frame(width: 20)
+                Text(title).lineLimit(1)
+                Spacer(minLength: 0)
             }
-            Section(L("category.settings.scope", "默认扫描范围")) {
-                Picker(L("category.settings.scope", "默认扫描范围"), selection: customScope) {
-                    Text(L("category.settings.default", "默认位置（含可见外置磁盘）")).tag(false)
-                    Text(L("category.settings.custom", "仅扫描指定目录")).tag(true)
-                }
-                if rule.usesCustomRoots {
-                    if rule.paths.isEmpty {
-                        Text(L("category.settings.empty", "尚未添加目录，分类扫描不会搜索其他位置。"))
-                            .font(.caption).foregroundStyle(.secondary)
+            .foregroundStyle(selected ? Color.white : Color.primary)
+            .padding(.horizontal, 15).frame(height: 38)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(selected ? Color.accentColor : Color.clear)
+            .contentShape(Rectangle())
+        }.buttonStyle(.plain).accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ScrollView {
+                VStack(spacing: 2) {
+                    categoryItem("", title: L("category.settings.all", "所有类别的默认设置"), icon: "square.grid.2x2")
+                    ForEach(FileCategory.sidebarOrder) { category in
+                        categoryItem(category.rawValue, title: category.localizedName, icon: category.symbol)
                     }
-                    ForEach(rule.paths, id: \.self) { path in
+                }.padding(.vertical, 16)
+            }
+            .frame(width: 190)
+            .background(Color(nsColor: .controlBackgroundColor))
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(selectedCategory?.localizedName ?? L("category.settings.all", "所有类别的默认设置"))
+                        .font(.title3.weight(.semibold)).padding(.bottom, 18)
+                    Divider()
+                    if let category = selectedCategory {
                         HStack {
-                            Image(systemName: "folder")
-                            Text((path as NSString).abbreviatingWithTildeInPath).lineLimit(1).truncationMode(.middle).help(path)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(L("category.settings.override", "为此类别单独设置"))
+                                if isInherited {
+                                    Text(L("category.settings.inherited", "当前使用所有类别的默认设置。"))
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
                             Spacer()
-                            Button { preferences.remove(path, for: selectedCategory) } label: { Image(systemName: "minus.circle") }
-                                .buttonStyle(.borderless).help(L("category.settings.remove", "移除扫描目录"))
+                            Toggle(L("category.settings.override", "为此类别单独设置"), isOn: Binding(
+                                get: { !isInherited }, set: { enabled in
+                                    if enabled { preferences.setRule(preferences.configuration.defaultRule, for: category) }
+                                    else { preferences.useDefault(for: category) }
+                                })).labelsHidden().toggleStyle(.switch)
+                        }.padding(.vertical, 14)
+                        Divider()
+                    }
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Text(L("category.settings.scope", "默认扫描范围"))
+                            Spacer(minLength: 12)
+                            Picker(L("category.settings.scope", "默认扫描范围"), selection: customScope) {
+                                Text(L("category.settings.default", "默认位置（含可见外置磁盘）")).tag(false)
+                                Text(L("category.settings.custom", "仅扫描指定目录")).tag(true)
+                            }.labelsHidden().frame(maxWidth: 220)
                         }
-                    }
-                    Button(L("category.settings.add", "添加扫描目录…")) { choosingFolder = true }
-                    Text(L("category.settings.multiHint", "可以一次选择多个文件夹，也可以多次添加不同位置。"))
-                        .font(.caption).foregroundStyle(.secondary)
-                    Text(L("category.settings.offline", "目录暂时不可用时会保留设置；重新连接后可继续扫描。"))
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            }.disabled(isInherited)
-            Section(L("category.settings.limit", "分类结果数量")) {
-                Toggle(L("category.settings.unlimited", "不限制结果数量"), isOn: unlimited)
-                if rule.resultLimit != 0 {
-                    HStack {
-                        Text(L("category.settings.limitLabel", "每类上限")).fixedSize()
-                        Spacer()
-                        TextField(L("category.settings.limitField", "每个分类的结果上限"), text: $limitText)
-                            .labelsHidden().frame(width: 100).textFieldStyle(.roundedBorder)
-                        Button(L("category.settings.apply", "应用")) {
-                            guard let limit = parsedLimit else { return }
-                            updateRule { $0.resultLimit = limit }
-                        }.disabled(parsedLimit == nil || parsedLimit == rule.resultLimit)
-                    }
-                    Text(L("category.settings.limitHint", "输入 1 至 1,000,000；仍可在分类页继续加载和深入扫描。"))
-                        .font(.caption).foregroundStyle(.secondary)
-                } else {
-                    Text(L("category.settings.unlimitedHint", "不限数量时也会深入遍历所选范围，扫描可能较慢并占用较多内存，可随时取消。"))
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            }.disabled(isInherited)
+                        if rule.usesCustomRoots {
+                            if rule.paths.isEmpty {
+                                Text(L("category.settings.empty", "尚未添加目录，分类扫描不会搜索其他位置。"))
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            ForEach(rule.paths, id: \.self) { path in
+                                HStack {
+                                    Image(systemName: "folder")
+                                    Text((path as NSString).abbreviatingWithTildeInPath).lineLimit(1).truncationMode(.middle).help(path)
+                                    Spacer()
+                                    Button { preferences.remove(path, for: selectedCategory) } label: { Image(systemName: "minus.circle") }
+                                        .buttonStyle(.borderless).help(L("category.settings.remove", "移除扫描目录"))
+                                }
+                            }
+                            Button(L("category.settings.add", "添加扫描目录…")) { choosingFolder = true }
+                            Text(L("category.settings.multiHint", "可以一次选择多个文件夹，也可以多次添加不同位置。"))
+                                .font(.caption).foregroundStyle(.secondary)
+                            Text(L("category.settings.offline", "目录暂时不可用时会保留设置；重新连接后可继续扫描。"))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }.padding(.vertical, 14).disabled(isInherited)
+                    Divider()
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Text(L("category.settings.unlimited", "不限制结果数量"))
+                            Spacer()
+                            Toggle(L("category.settings.unlimited", "不限制结果数量"), isOn: unlimited).labelsHidden().toggleStyle(.switch)
+                        }
+                        if rule.resultLimit != 0 {
+                            HStack {
+                                Text(L("category.settings.limitLabel", "每类上限"))
+                                Spacer()
+                                TextField(L("category.settings.limitField", "每个分类的结果上限"), text: $limitText)
+                                    .labelsHidden().frame(width: 100).textFieldStyle(.roundedBorder)
+                                Button(L("category.settings.apply", "应用")) {
+                                    guard let limit = parsedLimit else { return }
+                                    updateRule { $0.resultLimit = limit }
+                                }.disabled(parsedLimit == nil || parsedLimit == rule.resultLimit)
+                            }
+                            Text(L("category.settings.limitHint", "输入 1 至 1,000,000；仍可在分类页继续加载和深入扫描。"))
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else {
+                            Text(L("category.settings.unlimitedHint", "不限数量时也会深入遍历所选范围，扫描可能较慢并占用较多内存，可随时取消。"))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }.padding(.vertical, 14).disabled(isInherited)
+                    Divider()
+                }.padding(.horizontal, 28).padding(.vertical, 24)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(Color(nsColor: .windowBackgroundColor))
         }
-        .formStyle(.grouped)
         .onAppear { syncLimit() }
         .onChange(of: selectedCategoryRaw) { _ in syncLimit() }
         .onChange(of: preferences.configuration) { _ in syncLimit() }

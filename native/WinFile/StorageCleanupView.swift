@@ -8,33 +8,42 @@ struct StorageCleanupView: View {
     var nestedInHub = false
     @State private var showsDetails = false
     @State private var showsSettings = false
+    @State private var settingsPage = 0
     @State private var showsFolderPicker = false
+    @State private var showsFilters = false
 
     var body: some View {
         GeometryReader { geometry in
             let compact = geometry.size.height < 560
-            VStack(alignment: .leading, spacing: compact ? 8 : 14) {
+            VStack(alignment: .leading, spacing: compact ? 6 : 10) {
                 header
-                summary(compact: compact)
                 filters
-                if hasFilters { activeFilters }
-                files.frame(minHeight: 100).modifier(InsetSurface())
+                resultsContent.frame(minHeight: 80, maxHeight: .infinity)
                 footer
             }
-            .padding(compact ? 12 : 20)
+            .padding(compact ? 10 : 16)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .controlSize(compact ? .small : .regular)
         }
         .background(InterfaceStyle.canvas)
-        .sheet(isPresented: $showsFolderPicker) {
-            FolderPickerSheet(initialDirectory: (store.isBaidu ? store.downloadFolder : store.largeFolder) ?? FileSystemService.realHomeDirectory(),
-                              title: store.folderPickerTitle) { url in
-                store.chooseFolder(url) ? nil : store.message
-            }
+        .sheet(isPresented: $showsSettings) {
+            settings
+                .sheet(isPresented: $showsFolderPicker) {
+                    FolderPickerSheet(initialDirectory: (store.isBaidu ? store.downloadFolder : store.largeFolder) ?? FileSystemService.realHomeDirectory(),
+                                      title: store.folderPickerTitle) { url in
+                        store.chooseFolder(url) ? nil : store.message
+                    }
+                }
+        }
+        .onChange(of: store.selectedSoftwareID) { _ in
+            showsSettings = false
+            showsFolderPicker = false
+            showsDetails = false
+            showsFilters = false
+            settingsPage = 0
         }
         .onChange(of: store.message) { if $0 != nil && !showsFolderPicker { showsDetails = true } }
         .popover(isPresented: $showsDetails) { details }
-        .popover(isPresented: $showsSettings) { settings }
         .alert(L("cleanup.confirm", "将所选文件移到废纸篓？"), isPresented: $store.confirmsTrash) {
             Button(L("action.moveToTrash", "移到废纸篓"), role: .destructive) { store.clean() }
             Button(L("button.cancel", "取消"), role: .cancel) {}
@@ -58,12 +67,9 @@ struct StorageCleanupView: View {
                     scanActions
                 }
             }
-            if store.isBaidu {
-                HStack {
-                    Button(store.folderPickerTitle) { showsFolderPicker = true }.disabled(store.busy)
-                    Button(L("software.baiduDefaultFolders", "恢复常见下载目录")) { store.useDefaultDownloadFolders() }.disabled(store.busy)
-                }
-                Text(store.downloadScopeDescription).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            if store.scanNeedsRefresh {
+                Label(L("cleanup.rescanNeeded", "扫描设置已更改，请重新扫描后再清理。"), systemImage: "arrow.clockwise.circle")
+                    .font(.caption).foregroundStyle(.orange)
             }
             if store.result.cancelled || store.result.limited || !store.result.inaccessible.isEmpty {
                 Label(store.result.cancelled ? L("cleanup.cancelled", "已取消，结果不完整。") : L("cleanup.partial", "扫描有上限或部分目录无法读取，结果不完整。可在扫描设置中选择单一类别缩小范围。"), systemImage: "exclamationmark.triangle")
@@ -74,24 +80,42 @@ struct StorageCleanupView: View {
 
     private var headerTitle: some View {
         VStack(alignment: .leading, spacing: 5) {
-            if store.softwareMode || !nestedInHub {
+            if !nestedInHub {
                 Text(store.softwareMode ? store.softwareTitle : L("cleanup.title", "空间清理"))
                     .font(.title3.weight(.semibold))
             }
-            Text(store.isBaidu ? L("software.baiduScope", "下载文件单独展示，不限大小和时间；跳过未完成任务。缓存和日志默认保留最近 7 天，运行时跳过。扫描不会删除文件，清理前请退出百度网盘。") : store.softwareMode ? L("software.cacheScope", "仅扫描当前软件的可重建缓存和日志；运行中的软件会跳过。扫描不会删除文件。") : L("cleanup.overview", "查看缓存、日志、安装包、大文件与聊天附件；扫描不会删除文件。"))
-                .font(.caption).foregroundStyle(.secondary).lineLimit(3)
+            summary
         }
     }
 
     private var scanActions: some View {
         HStack(spacing: 8) {
-            Button { showsSettings = true } label: {
-                Label(L("cleanup.settings", "扫描设置"), systemImage: "gearshape")
-            }.disabled(store.busy)
-            Button { showsDetails = true } label: {
+            Menu {
+                Button {
+                    DispatchQueue.main.async { showsSettings = true }
+                } label: {
+                    Label(L("cleanup.settings", "扫描设置"), systemImage: "gearshape")
+                }.disabled(store.busy)
+                Button {
+                    DispatchQueue.main.async { showsDetails = true }
+                } label: {
+                    Label(L("cleanup.details", "扫描详情 / 忽略 / 历史"), systemImage: "info.circle")
+                }
+                if store.softwareMode {
+                    Divider()
+                    Button {
+                        store.refreshSoftwareChoices()
+                    } label: {
+                        Label(L("software.refresh", "刷新软件列表"), systemImage: "arrow.clockwise")
+                    }.disabled(store.busy)
+                }
+            } label: {
                 Image(systemName: "ellipsis.circle")
-            }.help(L("cleanup.details", "扫描详情 / 忽略 / 历史"))
-                .accessibilityLabel(L("cleanup.details", "扫描详情 / 忽略 / 历史"))
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help(L("cleanup.options", "清理选项"))
+            .accessibilityLabel(L("cleanup.options", "清理选项"))
             if store.busy {
                 ProgressView().controlSize(.small)
                 Button(L("button.cancel", "取消")) { store.cancel() }
@@ -102,92 +126,158 @@ struct StorageCleanupView: View {
             }
         }.fixedSize(horizontal: true, vertical: false)
     }
-    private var settings: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text(L("cleanup.settings", "扫描设置")).font(.headline)
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Picker(L("cleanup.scanScope", "本次扫描"), selection: $store.scanScope) {
-                        Text(L("wechat.all", "全部类型")).tag("all")
-                        ForEach(store.availableKinds) { Text($0.title).tag($0.rawValue) }
-                    }
-                    if !store.softwareMode {
-                    Picker(L("cleanup.threshold", "大文件至少"), selection: $store.minimumLargeMB) {
-                        Text("100 MB").tag(100); Text("500 MB").tag(500); Text("1 GB").tag(1024)
-                    }
-                    }
-                }
-                Text(store.softwareMode ? L("software.age", "缓存 / 日志保留") : L("cleanup.age", "缓存 / 日志 / 安装包保留")).font(.caption)
-                Picker(L("cleanup.age", "缓存 / 日志 / 安装包保留"), selection: $store.minimumAgeDays) {
-                    Text(L("cleanup.age0", "不限时间")).tag(0)
-                    Text(L("cleanup.age7", "最近 7 天不清理")).tag(7)
-                    Text(L("cleanup.age30", "最近 30 天不清理")).tag(30)
-                }.labelsHidden()
-                if !store.softwareMode {
-                HStack {
-                    Button(L("cleanup.chooseFolder", "选择大文件扫描目录…")) { showsSettings = false; showsFolderPicker = true }
-                    Button(L("cleanup.defaultFolders", "恢复默认大文件扫描范围")) { store.useDefaultFolders() }
-                }
-                Text(store.largeFolder?.path ?? L("cleanup.defaultScope", "大文件范围：下载、桌面、文稿、影片、图片和音乐；自选目录需位于个人文件夹内，且不能是 Library。"))
-                    .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                }
-                Text(L("cleanup.settingsHint", "修改扫描设置后，点击重新扫描生效；名称、类别与来源筛选会立即生效。"))
-                    .font(.caption).foregroundStyle(.secondary)
-            }.disabled(store.busy)
-            HStack { Spacer(); Button(L("button.done", "完成")) { showsSettings = false } }
-        }.padding(18).frame(width: 540)
+    private func scanSettingRow<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        HStack(spacing: 12) {
+            Text(title).font(.subheadline)
+            Spacer(minLength: 12)
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
-    private func summary(compact: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 12) {
-                CleanupMetricCard(title: L("cleanup.candidateBytes", "候选文件占用"),
-                                  value: FileItem.formatSize(store.totalBytes),
-                                  detail: L("cleanup.candidateCount", "%d 项 · 不会自动删除", store.result.files.count),
-                                  symbol: "externaldrive", compact: compact)
-                CleanupMetricCard(title: L("cleanup.selected", "已选文件"),
-                                  value: FileItem.formatSize(store.selectedBytes),
-                                  detail: L("wechat.usage.count", "%d 个文件", store.selection.count),
-                                  symbol: "checkmark.circle", compact: compact)
+
+    private func settingsNavigationItem(_ page: Int, title: String, icon: String) -> some View {
+        let selected = settingsPage == page
+        return Button { settingsPage = page } label: {
+            HStack(spacing: 9) {
+                Image(systemName: icon).frame(width: 18)
+                Text(title).lineLimit(1)
+                Spacer(minLength: 0)
             }
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 14) { secondaryScanned; Text("·"); secondaryFiltered }
-                VStack(alignment: .leading, spacing: 3) { secondaryScanned; secondaryFiltered }
+            .font(.subheadline.weight(selected ? .semibold : .regular))
+            .foregroundStyle(selected ? Color.white : Color.primary)
+            .padding(.horizontal, 12).frame(height: 38)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(selected ? Color.accentColor : Color.clear)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    private var settings: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text(L("cleanup.settings", "扫描设置")).font(.headline)
+                Spacer()
+                Button(L("button.done", "完成")) { showsSettings = false }
+                    .keyboardShortcut(.defaultAction)
             }
-            .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+            .padding(.horizontal, 16).padding(.vertical, 10)
+            Divider()
+            HStack(spacing: 0) {
+                VStack(spacing: 3) {
+                    settingsNavigationItem(0, title: L("cleanup.settings.scopeTab", "扫描范围"), icon: "folder.badge.gearshape")
+                    settingsNavigationItem(1, title: L("cleanup.settings.rulesTab", "清理规则"), icon: "slider.horizontal.3")
+                    Spacer(minLength: 0)
+                }
+                .padding(.vertical, 18).frame(width: 190)
+                .frame(maxHeight: .infinity, alignment: .top)
+                .background(Color(nsColor: .controlBackgroundColor))
+                Divider()
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(settingsPage == 0 ? L("cleanup.settings.scopeTab", "扫描范围") : L("cleanup.settings.rulesTab", "清理规则"))
+                            .font(.headline).padding(.bottom, 10)
+                        Divider()
+                        if settingsPage == 0 {
+                            scanSettingRow(L("cleanup.scanScope", "本次扫描")) { scopeSetting }
+                                .padding(.vertical, 10)
+                            if !store.softwareMode || store.isBaidu {
+                                Divider()
+                                folderSettings.padding(.vertical, 10)
+                            }
+                        } else {
+                            scanSettingRow(store.softwareMode ? L("software.age", "缓存 / 日志保留") : L("cleanup.age", "缓存 / 日志 / 安装包保留")) { ageSetting }
+                                .padding(.vertical, 10)
+                            if !store.softwareMode {
+                                Divider()
+                                scanSettingRow(L("cleanup.threshold", "大文件至少")) { thresholdSetting }
+                                    .padding(.vertical, 10)
+                            }
+                        }
+                        if store.scanNeedsRefresh {
+                            Label(L("cleanup.rescanNeeded.short", "重新扫描后生效"), systemImage: "arrow.clockwise")
+                                .font(.caption).foregroundStyle(.orange).padding(.top, 6)
+                        }
+                    }
+                    .disabled(store.busy)
+                    .padding(.horizontal, 28).padding(.vertical, 24)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(width: 720, height: 440)
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var scopeSetting: some View {
+        Picker(L("cleanup.scanScope", "本次扫描"), selection: $store.scanScope) {
+            Text(L("wechat.all", "全部类型")).tag("all")
+            ForEach(store.availableKinds) { Text($0.title).tag($0.rawValue) }
+        }.labelsHidden().fixedSize()
+    }
+
+    private var ageSetting: some View {
+        Picker(store.softwareMode ? L("software.age", "缓存 / 日志保留") : L("cleanup.age", "缓存 / 日志 / 安装包保留"), selection: $store.minimumAgeDays) {
+            Text(L("cleanup.age0", "不限时间")).tag(0)
+            Text(L("cleanup.age7", "最近 7 天不清理")).tag(7)
+            Text(L("cleanup.age30", "最近 30 天不清理")).tag(30)
+        }.labelsHidden().fixedSize()
+    }
+
+    private var thresholdSetting: some View {
+        Picker(L("cleanup.threshold", "大文件至少"), selection: $store.minimumLargeMB) {
+            Text("100 MB").tag(100); Text("500 MB").tag(500); Text("1 GB").tag(1024)
+        }.labelsHidden().fixedSize()
+    }
+
+    private var folderSettings: some View {
+        let custom = store.isBaidu ? store.downloadFolder != nil : store.largeFolder != nil
+        let path = store.isBaidu ? store.downloadScopeDescription : (store.largeFolder?.path ?? L("cleanup.defaultFolders.short", "下载、桌面、文稿、影片、图片和音乐"))
+        return VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                Text(store.isBaidu ? L("cleanup.downloadLocation", "下载目录") : L("cleanup.largeFileLocation", "大文件扫描目录"))
+                    .font(.subheadline.weight(.medium))
+                Spacer()
+                Button(L("cleanup.chooseLocation", "选择…")) { showsFolderPicker = true }
+                    .help(store.folderPickerTitle)
+                if custom {
+                    Button(L("cleanup.restoreLocation", "恢复默认")) {
+                        if store.isBaidu { store.useDefaultDownloadFolders() } else { store.useDefaultFolders() }
+                    }
+                }
+            }
+            Text(path).font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+            if !store.softwareMode {
+                Text(L("cleanup.locationHint", "自选目录须位于个人文件夹内，不能选择 Library。"))
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
         }
     }
-
-    private var secondaryScanned: some View {
-        Text(L("cleanup.scannedDisk", "已扫描磁盘占用（估算）") + "  " + FileItem.formatSize(store.result.scannedBytes))
-    }
-
-    private var secondaryFiltered: some View {
-        Text(L("cleanup.filtered", "筛选结果") + "  " + L("cleanup.resultCount", "%d 项 / %@", store.display.filtered.count, FileItem.formatSize(store.display.bytes)))
+    private var summary: some View {
+        HStack(spacing: 12) {
+            Label(L("cleanup.candidateSummary", "候选 %d 项 · %@", store.result.files.count, FileItem.formatSize(store.totalBytes)), systemImage: "externaldrive")
+            if hasFilters {
+                Text(L("cleanup.filtered", "筛选结果") + "  " + L("cleanup.resultCount", "%d 项 / %@", store.display.filtered.count, FileItem.formatSize(store.display.bytes)))
+            }
+            Spacer(minLength: 0)
+        }
+        .font(.caption).foregroundStyle(.secondary).monospacedDigit()
     }
 
     private var filters: some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 10) {
-                filterSearch.frame(minWidth: 160)
-                filterPickers
+                filterSearch.frame(minWidth: 160, maxWidth: .infinity)
+                filterControls.fixedSize(horizontal: true, vertical: false)
             }
-            VStack(alignment: .leading, spacing: 8) { filterSearch; filterPickers }
+            VStack(alignment: .leading, spacing: 8) { filterSearch; filterControls }
         }.disabled(store.busy)
     }
 
     private var hasFilters: Bool { !store.search.isEmpty || store.category != "all" || store.owner != "all" }
-    private var activeFilters: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                if !store.search.isEmpty { ActiveFilterChip(title: store.search) { store.search = "" } }
-                if store.category != "all" {
-                    ActiveFilterChip(title: store.availableKinds.first { $0.rawValue == store.category }?.title ?? store.category) { store.category = "all" }
-                }
-                if store.owner != "all" { ActiveFilterChip(title: store.ownerTitle(store.owner)) { store.owner = "all" } }
-                Button(L("wechat.filters.reset", "重置筛选")) { resetFilters() }.buttonStyle(.link).font(.caption)
-            }.padding(.vertical, 2)
-        }.frame(height: 30).disabled(store.busy)
-    }
     private func resetFilters() { store.search = ""; store.category = "all"; store.owner = "all" }
 
     private var filterSearch: some View {
@@ -198,23 +288,111 @@ struct StorageCleanupView: View {
         .padding(.horizontal, 9).padding(.vertical, 6).modifier(InsetSurface(radius: 6))
     }
 
-    private var filterPickers: some View {
+    private var filterControls: some View {
         HStack(spacing: 8) {
-            Picker(L("inspector.type", "类型"), selection: $store.category) {
-                Text(L("wechat.all", "全部类型")).tag("all")
-                ForEach(store.availableKinds) { Text($0.title).tag($0.rawValue) }
-            }.labelsHidden().frame(minWidth: 100, idealWidth: 120, maxWidth: 150)
-            Picker(L("cleanup.owner", "应用 / 来源"), selection: $store.owner) {
-                Text(L("cleanup.allOwners", "全部应用 / 来源")).tag("all")
-                ForEach(store.owners, id: \.self) { Text(store.ownerTitle($0)).tag($0) }
-            }.labelsHidden().frame(minWidth: 125, idealWidth: 170, maxWidth: 210)
+            Button { showsFilters.toggle() } label: {
+                Label(L("cleanup.filters", "筛选"), systemImage: "line.3.horizontal.decrease.circle")
+            }
+            .popover(isPresented: $showsFilters) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(L("cleanup.filters", "筛选")).font(.headline)
+                    filterPickers
+                    HStack {
+                        Button(L("wechat.filters.reset", "重置筛选")) { resetFilters() }.disabled(!hasFilters)
+                        Spacer()
+                        Button(L("button.done", "完成")) { showsFilters = false }
+                    }
+                }.padding(16).frame(width: 300)
+            }
             Picker(L("wechat.sort", "排序"), selection: $store.sort) {
                 Text(L("sort.size", "按大小")).tag("size")
                 Text(L("sort.name", "按名称")).tag("name")
                 Text(L("cleanup.oldest", "最早修改优先")).tag("date")
-            }.labelsHidden().frame(minWidth: 110, idealWidth: 125, maxWidth: 170)
+            }.labelsHidden().frame(width: 135)
         }
     }
+
+    private var filterPickers: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Picker(L("inspector.type", "类型"), selection: $store.category) {
+                Text(L("wechat.all", "全部类型")).tag("all")
+                ForEach(visibleCategoryKinds) { Text($0.title).tag($0.rawValue) }
+            }
+            Picker(L("cleanup.owner", "应用 / 来源"), selection: $store.owner) {
+                Text(L("cleanup.allOwners", "全部应用 / 来源")).tag("all")
+                ForEach(store.owners, id: \.self) { Text(store.ownerTitle($0)).tag($0) }
+            }
+        }
+    }
+    private var resultsContent: some View {
+        GeometryReader { geometry in
+            HStack(alignment: .top, spacing: 10) {
+                if geometry.size.width >= 650 {
+                    categoryList
+                        .frame(width: 220)
+                        .frame(maxHeight: .infinity, alignment: .top)
+                        .modifier(InsetSurface())
+                }
+                files.frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .modifier(InsetSurface())
+            }
+        }
+    }
+
+    private var categoryList: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 3) {
+                categoryRow(id: "all", title: L("wechat.all", "全部类型"), count: store.result.files.count, bytes: store.totalBytes, icon: "square.grid.2x2")
+                ForEach(visibleCategoryKinds) { kind in
+                    categoryRow(id: kind.rawValue, title: kind.title,
+                                count: store.display.kindCounts[kind.rawValue] ?? 0,
+                                bytes: store.display.kindBytes[kind.rawValue] ?? 0,
+                                icon: categorySymbol(kind))
+                }
+            }.padding(8)
+        }
+        .disabled(store.busy)
+    }
+
+    // These categories depend on optional app data. Keep scanning them, but
+    // only show them in the overview when there are results or an active filter.
+    private var visibleCategoryKinds: [StorageCleanupKind] {
+        store.availableKinds.filter { kind in
+            guard !store.softwareMode, kind == .download || kind == .wechatAttachment else { return true }
+            return (store.display.kindCounts[kind.rawValue] ?? 0) > 0 || store.category == kind.rawValue
+        }
+    }
+
+    private func categorySymbol(_ kind: StorageCleanupKind) -> String {
+        switch kind {
+        case .cache: return "folder"
+        case .log: return "doc.text"
+        case .installer: return "shippingbox"
+        case .largeFile: return "doc.zipper"
+        case .download: return "arrow.down.circle"
+        case .wechatAttachment: return "paperclip"
+        }
+    }
+
+    private func categoryRow(id: String, title: String, count: Int, bytes: Int64, icon: String) -> some View {
+        let selected = store.category == id
+        return Button { store.category = id } label: {
+            HStack(spacing: 9) {
+                Image(systemName: icon).frame(width: 18).foregroundStyle(selected ? Color.accentColor : Color.secondary)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title).lineLimit(1)
+                    Text(L("cleanup.resultCount", "%d 项 / %@", count, FileItem.formatSize(bytes)))
+                        .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 9).padding(.vertical, 9)
+            .background(selected ? Color.accentColor.opacity(0.14) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
+        }.buttonStyle(.plain).accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
     private var files: some View {
         Table(of: StorageCleanupFile.self, selection: $store.selection) {
             TableColumn(L("column.name", "名称")) { file in
@@ -244,7 +422,7 @@ struct StorageCleanupView: View {
                 Button(L("cleanup.ignoreFile", "忽略此文件")) { store.ignore(file.url) }
                 Button(L("cleanup.ignoreFolder", "忽略所在文件夹")) { store.ignore(file.url.deletingLastPathComponent()) }
                 Divider()
-                Button(L("action.moveToTrash", "移到废纸篓"), role: .destructive) { store.requestTrash(ids) }.disabled(store.busy)
+                Button(L("action.moveToTrash", "移到废纸篓"), role: .destructive) { store.requestTrash(ids) }.disabled(store.busy || store.scanNeedsRefresh)
             }
         } primaryAction: { ids in
             if let file = store.result.files.first(where: { ids.contains($0.id) }) { NSWorkspace.shared.open(file.url) }
@@ -273,26 +451,36 @@ struct StorageCleanupView: View {
     private var footer: some View {
         VStack(alignment: .leading, spacing: 8) {
             Divider().opacity(0.6)
-            Text(L("cleanup.selectionSummary", "已选 %d 项 · %@", store.selection.count, FileItem.formatSize(store.selectedBytes)))
-                .font(.caption.weight(.medium)).monospacedDigit()
             ViewThatFits(in: .horizontal) {
-                HStack(spacing: 12) { selectionActions; Spacer(minLength: 8); pageActions; trashAction }
+                HStack(spacing: 12) { selectionSummary; selectionActions; Spacer(minLength: 8); pageActions; trashAction }
                 VStack(alignment: .leading, spacing: 8) {
-                    HStack { selectionActions; Spacer(); pageActions }
+                    HStack { selectionSummary; selectionActions; Spacer(); pageActions }
                     HStack { Spacer(); trashAction }
                 }
             }
-            Text(store.isScanning ? L("cleanup.progress", "已检查 %d 项，发现 %d 个候选", store.progress.visited, store.progress.candidates)
-                 : store.isCleaning ? L("cleanup.cleaning", "正在复查并清理第 %d 项…", store.cleaningIndex)
-                 : L("cleanup.trashNote", "移到废纸篓不会立即释放磁盘空间；可用 ⌘Z 撤销成功的移动。占用受 APFS 共享块影响，仅作估算。"))
-                .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if store.busy {
+                Text(store.isScanning ? L("cleanup.progress", "已检查 %d 项，发现 %d 个候选", store.progress.visited, store.progress.candidates)
+                     : L("cleanup.cleaning", "正在复查并清理第 %d 项…", store.cleaningIndex))
+                    .font(.caption2).foregroundStyle(.secondary)
+            } else if !store.selection.isEmpty {
+                Text(L("cleanup.trashNote", "移到废纸篓不会立即释放磁盘空间；可用 ⌘Z 撤销成功的移动。占用受 APFS 共享块影响，仅作估算。"))
+                    .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
         }
+    }
+
+    private var selectionSummary: some View {
+        Text(L("cleanup.selectionSummary", "已选 %d 项 · %@", store.selection.count, FileItem.formatSize(store.selectedBytes)))
+            .font(.caption.weight(.medium)).monospacedDigit().fixedSize()
     }
 
     private var selectionActions: some View {
         HStack(spacing: 12) {
-            Button(L("wechat.selectAll", "全选筛选结果")) { store.selectAll() }
-            Button(L("wechat.clearSelection", "清除选择")) { store.selection = [] }
+            if store.selection.isEmpty {
+                Button(L("wechat.selectAll", "全选筛选结果")) { store.selectAll() }.disabled(store.display.filtered.isEmpty || store.scanNeedsRefresh)
+            } else {
+                Button(L("wechat.clearSelection", "清除选择")) { store.selection = [] }
+            }
         }.buttonStyle(.link).disabled(store.busy)
     }
 
@@ -312,7 +500,7 @@ struct StorageCleanupView: View {
     private var trashAction: some View {
         Button(role: .destructive) { store.requestTrash() } label: {
             Label(L("action.moveToTrash", "移到废纸篓"), systemImage: "trash")
-        }.buttonStyle(TrashActionStyle()).disabled(store.busy || store.selection.isEmpty)
+        }.buttonStyle(TrashActionStyle()).disabled(store.busy || store.scanNeedsRefresh || store.selection.isEmpty)
     }
     private var details: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -320,6 +508,8 @@ struct StorageCleanupView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     if let message = store.message { Text(message).font(.caption).textSelection(.enabled) }
+                    Text(L("cleanup.scannedDisk", "已扫描磁盘占用（估算）") + "  " + FileItem.formatSize(store.result.scannedBytes))
+                        .font(.caption).foregroundStyle(.secondary)
                     Text(store.isBaidu ? L("software.baiduProtection", "仅处理明确下载目录中的文件，以及已识别的缓存和日志。不读取下载记录数据库；跳过未完成下载、数据库、凭据、隐藏文件、符号链接及硬链接。清理时检查百度网盘运行及文件占用状态，默认不勾选文件。") : store.softwareMode ? L("software.protection", "仅处理当前软件的缓存和日志。跳过运行中的应用、数据库、凭据、持久数据、受保护缓存、符号链接及硬链接；无法确认安全状态的项目会保留。") : L("cleanup.protection", "清理前检查应用运行和文件占用状态，跳过数据库、凭据、受保护缓存、符号链接及硬链接；无法确认安全状态的文件会保留。附件和下载文件是个人资料，请核对后再清理。"))
                         .font(.caption).foregroundStyle(.secondary)
                     Text(L("cleanup.skippedOwners", "已跳过 %d 个运行中应用的扫描位置", store.result.skippedRunning)).font(.caption)
