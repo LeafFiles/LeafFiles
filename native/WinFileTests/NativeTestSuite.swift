@@ -762,6 +762,19 @@ enum NativeTestSuite {
         integration.scan(); waitFor { integration.hasScanned && !integration.isScanning }
         check("后台扫描发布完整结果", integration.hasScanned && integration.result.files.contains { $0.url == installer })
         integration.selection = [installer.path]; integration.requestTrash()
+        let customLargeFolder = home.appendingPathComponent("Documents/Pagination")
+        check("更改大文件扫描目录使旧结果失效", integration.chooseFolder(customLargeFolder) && integration.scanNeedsRefresh && integration.selection.isEmpty && integration.pendingFiles.isEmpty && !integration.confirmsTrash)
+        integration.useDefaultFolders()
+        check("恢复默认扫描目录仍要求重新扫描", integration.largeFolder == nil && integration.scanNeedsRefresh)
+        integration.scan(); waitFor { !integration.isScanning }
+        integration.selection = [installer.path]; integration.requestTrash()
+        integration.minimumAgeDays = 0
+        check("更改扫描设置清除旧选择和待确认清理", integration.scanNeedsRefresh && integration.selection.isEmpty && integration.pendingFiles.isEmpty && !integration.confirmsTrash)
+        integration.requestTrash([installer.path])
+        check("旧扫描结果不能被重新确认清理", !integration.confirmsTrash && integration.pendingFiles.isEmpty)
+        integration.scan(); waitFor { !integration.isScanning }
+        check("重新扫描后恢复清理能力", integration.hasScanned && !integration.scanNeedsRefresh && integration.result.files.contains { $0.url == installer })
+        integration.selection = [installer.path]; integration.requestTrash()
         let beforeBytes = integration.result.scannedBytes
         let installerAllocated = integration.selectedFiles.reduce(Int64(0)) { $0 + $1.allocated }
         let beforeDownloads = integration.result.folders.first { $0.url == installer.deletingLastPathComponent() }
