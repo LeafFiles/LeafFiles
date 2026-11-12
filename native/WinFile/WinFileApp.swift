@@ -18,10 +18,6 @@ struct WinFileApp: App {
         .windowToolbarStyle(.unified(showsTitle: true))
         .commands { WinFileCommands(engine: engine) }
 
-        Settings {
-            SettingsView(engine: engine)
-                .environment(\.locale, localization.locale)
-        }
     }
 
     private var startDirectory: URL? {
@@ -342,22 +338,17 @@ private struct LocalizedApplicationCommands: Commands {
     var body: some Commands {
         // The generated application commands keep macOS's launch language even
         // after SwiftUI's locale changes. Own their labels and retain the native
-        // actions; SettingsLink keeps the system-managed Settings scene on 14+.
+        // actions while routing Settings to the current browser window.
         CommandGroup(replacing: .appInfo) {
             Button(L("nativeMenu.about", "关于 LeafFiles")) {
                 NSApp.orderFrontStandardAboutPanel(nil)
             }
         }
         CommandGroup(replacing: .appSettings) {
-            if #available(macOS 14.0, *) {
-                SettingsLink { Text(L("nativeMenu.settings", "设置…")) }
-                    .keyboardShortcut(",", modifiers: .command)
-            } else {
-                Button(L("nativeMenu.settings", "设置…")) {
-                    NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-                }
-                .keyboardShortcut(",", modifiers: .command)
+            Button(L("nativeMenu.settings", "设置…")) {
+                BrowserWindowCommands.shared.openSettings()
             }
+            .keyboardShortcut(",", modifiers: .command)
         }
         CommandGroup(replacing: .appVisibility) {
             Button(L("nativeMenu.hide", "隐藏 LeafFiles")) { NSApp.hide(nil) }
@@ -378,8 +369,9 @@ struct WinFileCommands: Commands {
     @ObservedObject var engine: FSEngine
     @ObservedObject private var updater = AppUpdater.shared
     @ObservedObject private var windowCommands = BrowserWindowCommands.shared
-    private var model: BrowserModel? { windowCommands.manager?.activeModel }
-    private var canRestoreTab: Bool { !(windowCommands.manager?.closedTabs.isEmpty ?? true) }
+    private var isShowingSettings: Bool { windowCommands.manager?.isShowingSettings == true }
+    private var model: BrowserModel? { isShowingSettings ? nil : windowCommands.manager?.activeModel }
+    private var canRestoreTab: Bool { !isShowingSettings && !(windowCommands.manager?.closedTabs.isEmpty ?? true) }
 
     @ObservedObject private var operationHistory = FileOperationHistory.shared
     private var editingText: Bool { NSApp.keyWindow?.firstResponder is NSTextView }
@@ -411,7 +403,7 @@ struct WinFileCommands: Commands {
                 else { operationHistory.undo() }
             }
             .keyboardShortcut("z", modifiers: .command)
-            .disabled(!editingText && !operationHistory.canUndo)
+            .disabled(!editingText && (isShowingSettings || !operationHistory.canUndo))
             Button(L("operation.redoText", "重做文本编辑")) {
                 NSApp.sendAction(Selector(("redo:")), to: nil, from: nil)
             }.keyboardShortcut("z", modifiers: [.command, .shift]).disabled(!editingText)
@@ -428,9 +420,11 @@ struct WinFileCommands: Commands {
                 NotificationCenter.default.post(name: .winFileNewTab, object: windowCommands.manager)
             }
             .keyboardShortcut("t", modifiers: .command)
+            .disabled(isShowingSettings)
 
             Button(L("tab.close", "关闭标签页")) {
-                if model == nil { NSApp.keyWindow?.performClose(nil) }
+                if isShowingSettings { windowCommands.manager?.isShowingSettings = false }
+                else if model == nil { NSApp.keyWindow?.performClose(nil) }
                 else { NotificationCenter.default.post(name: .winFileCloseTab, object: windowCommands.manager) }
             }
             .keyboardShortcut("w", modifiers: .command)
@@ -502,7 +496,7 @@ struct WinFileCommands: Commands {
                 NotificationCenter.default.post(name: .winFileSearch, object: windowCommands.manager)
             }
             .keyboardShortcut("f", modifiers: .command)
-            .disabled(windowCommands.manager == nil)
+            .disabled(windowCommands.manager == nil || isShowingSettings)
         }
 
         // 前往
@@ -511,7 +505,7 @@ struct WinFileCommands: Commands {
                 NotificationCenter.default.post(name: .winFileEditPath, object: windowCommands.manager)
             }
             .keyboardShortcut("g", modifiers: [.command, .shift])
-            .disabled(windowCommands.manager == nil || (model?.isAndroidPath ?? false))
+            .disabled(windowCommands.manager == nil || isShowingSettings || (model?.isAndroidPath ?? false))
             Divider()
             Button(WLocalizedString("menu.back", comment: "后退")) { model?.goBack() }
                 .keyboardShortcut("[", modifiers: .command)
@@ -545,6 +539,7 @@ struct WinFileCommands: Commands {
                 }
             }
             .keyboardShortcut("o", modifiers: .command)
+            .disabled(isShowingSettings)
         }
 
         // 帮助

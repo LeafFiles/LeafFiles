@@ -55,6 +55,8 @@ final class TabManager: ObservableObject {
 
     @Published private(set) var tabs: [WinFileTab] = []
     @Published private(set) var activeID: UUID?
+    /// Window-local settings page; browsing tabs and split state remain intact.
+    @Published var isShowingSettings = false
     private var additionalVisibleIDs: Set<UUID> = []
 
     func setAdditionalVisibleTabs(_ ids: Set<UUID>) {

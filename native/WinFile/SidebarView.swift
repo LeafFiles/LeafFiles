@@ -11,6 +11,8 @@ struct SidebarView: View {
     @AppStorage("Sidebar.CategoriesExpanded") private var categoriesExpanded = true
     @ObservedObject var engine: FSEngine
     @ObservedObject var model: BrowserModel
+    var isShowingSettings = false
+    var openSettings: () -> Void = {}
     /// 分类的显示与顺序（右键菜单与拖拽排序共用）
     @ObservedObject private var preferences = SidebarPreferences.shared
 
@@ -50,7 +52,7 @@ struct SidebarView: View {
         List(selection: Binding<SidebarSelection?>(
             get: { model.sidebarSelection },
             set: { newValue in
-                guard let newValue else { return }
+                guard !isShowingSettings, let newValue else { return }
                 model.selectSidebarDestination(newValue)
             }
         )) {
@@ -199,6 +201,14 @@ struct SidebarView: View {
             }
             .buttonStyle(.plain)
             .accessibilityAddTraits(model.sidebarSelection == .storageCleanup ? .isSelected : [])
+            Button(action: openSettings) {
+                Label(L("nativeMenu.settingsTitle", "设置"), systemImage: "gearshape")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10).padding(.vertical, 9)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("sidebar.settings")
             Divider().opacity(0.6)
             Button { showAddFolder = true } label: {
                 Label(L("action.addFolder", "添加文件夹"), systemImage: "plus")

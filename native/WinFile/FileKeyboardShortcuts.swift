@@ -17,7 +17,8 @@ struct FileKeyboardShortcuts: NSViewRepresentable {
                 guard let self, let window = self.window, event.window === window,
                       window === NSApp.keyWindow, window.attachedSheet == nil,
                       let model = self.model,
-                      BrowserWindowCommands.shared.manager(for: window)?.activeModel === model else { return event }
+                      let manager = BrowserWindowCommands.shared.manager(for: window),
+                      !manager.isShowingSettings, manager.activeModel === model else { return event }
                 let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
                 let isSelectAll = modifiers == .command && event.charactersIgnoringModifiers?.lowercased() == "a"
                 if let editor = window.firstResponder as? NSTextView {

@@ -68,6 +68,18 @@ struct MainView: View {
 
     /// 三栏布局：侧边栏 / 内容（含页签栏）/ 详细信息
     private var splitLayout: some View {
+        ZStack {
+            browsingLayout
+                .opacity(tabManager.isShowingSettings ? 0 : 1)
+                .allowsHitTesting(!tabManager.isShowingSettings)
+                .accessibilityHidden(tabManager.isShowingSettings)
+            if tabManager.isShowingSettings {
+                settingsPage
+            }
+        }
+    }
+
+    private var browsingLayout: some View {
         GeometryReader { geometry in
             let inspectorAvailable = !model.isWeChatCleanupView && !model.isStorageCleanupView
             let inspectorVisible = showInspector && inspectorAvailable
@@ -78,7 +90,9 @@ struct MainView: View {
                                            showsSidebar: showSidebar)
             HStack(spacing: 0) {
                 if showSidebar {
-                    SidebarView(engine: engine, model: model).frame(width: widths.sidebar)
+                    SidebarView(engine: engine, model: model, isShowingSettings: tabManager.isShowingSettings,
+                                openSettings: { tabManager.isShowingSettings = true })
+                        .frame(width: widths.sidebar)
                     PaneResizeHandle(preferredWidth: $sidebarWidth, actualWidth: widths.sidebar, range: 160...360,
                                      expandsToRight: true, title: L("layout.sidebarWidth", "侧边栏宽度"), defaultWidth: 216,
                                      collapseTitle: L("action.hideSidebar", "隐藏侧边栏"), collapse: { showSidebar = false })
@@ -110,6 +124,24 @@ struct MainView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    private var settingsPage: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Button { tabManager.isShowingSettings = false } label: {
+                    Label(L("settings.back", "返回"), systemImage: "chevron.left")
+                }
+                .buttonStyle(LeafToolbarButtonStyle())
+                .accessibilityIdentifier("settings.back")
+                Spacer()
+            }
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .background(InterfaceStyle.chrome)
+            Divider().opacity(0.6)
+            SettingsView(engine: engine)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
     /// 启动时的初始位置（可在设置中指定）
     private var defaultStartDirectory: URL? {
         UserDefaults.standard.string(forKey: "StartFolderPath").flatMap { path in
@@ -135,9 +167,17 @@ struct MainView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .onChange(of: tabManager.activeID) { _ in syncSplitSelection() }
             .onChange(of: tabs.map(\.id)) { _ in reconcileSplitTabs() }
+            .onChange(of: tabManager.isShowingSettings) { showing in
+                if showing {
+                    editingPath = false
+                    suggestionTask?.cancel()
+                    suggestions = []
+                    NSApp.keyWindow?.makeFirstResponder(nil)
+                }
+            }
             .toolbar { toolbarContent }
-            .navigationTitle(model.windowSubtitle)
-            .navigationSubtitle(windowSubtitleSuffix)
+            .navigationTitle(tabManager.isShowingSettings ? L("nativeMenu.settingsTitle", "设置") : model.windowSubtitle)
+            .navigationSubtitle(tabManager.isShowingSettings ? "" : windowSubtitleSuffix)
             .focusedSceneValue(\.browserModel, model)
             .focusedSceneValue(\.tabCount, tabManager.count)
             .focusedSceneValue(\.canRestoreTab, !tabManager.closedTabs.isEmpty)
@@ -664,26 +704,29 @@ struct MainView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItemGroup(placement: .navigation) {
-            Button { showSidebar.toggle() } label: {
-                Label(showSidebar ? L("action.hideSidebar", "隐藏侧边栏") : L("action.showSidebar", "显示侧边栏"),
-                      systemImage: "sidebar.left")
+            if !tabManager.isShowingSettings {
+                Button { showSidebar.toggle() } label: {
+                    Label(showSidebar ? L("action.hideSidebar", "隐藏侧边栏") : L("action.showSidebar", "显示侧边栏"),
+                          systemImage: "sidebar.left")
+                }
+                .help(showSidebar ? L("action.hideSidebar", "隐藏侧边栏") : L("action.showSidebar", "显示侧边栏"))
+                .accessibilityIdentifier("sidebar.toggle")
+                Button { openFolderPanel() } label: {
+                    Label(L("action.openFolderInNewTab", "打开文件夹"),
+                          systemImage: "folder.badge.plus")
+                }
+                .help(L("action.openFolder.help", "选择文件夹并打开（在新页签中）"))
             }
-            .help(showSidebar ? L("action.hideSidebar", "隐藏侧边栏") : L("action.showSidebar", "显示侧边栏"))
-            .accessibilityIdentifier("sidebar.toggle")
-            // 打开文件夹（保留）：在新页签中打开，不影响当前页签
-            Button { openFolderPanel() } label: {
-                Label(L("action.openFolderInNewTab", "打开文件夹"),
-                      systemImage: "folder.badge.plus")
-            }
-            .help(L("action.openFolder.help", "选择文件夹并打开（在新页签中）"))
         }
         ToolbarItemGroup(placement: .primaryAction) {
             Button { dialog = .advancedSearch } label: {
-                // 放大镜是「搜索」的通用语义，工具栏上只保留这一处使用它
                 Label(L("search.windowTitle", "搜索文件"), systemImage: "magnifyingglass")
             }
             .help(L("search.windowTitle", "搜索文件") + " (⌘F)")
             .accessibilityIdentifier("search.open")
+            .opacity(tabManager.isShowingSettings ? 0 : 1)
+            .disabled(tabManager.isShowingSettings)
+            .accessibilityHidden(tabManager.isShowingSettings)
             if !model.isWeChatCleanupView && !model.isStorageCleanupView {
                 Button { showInspector.toggle() } label: {
                     Label(WLocalizedString("action.toggleInspector", comment: "显示详细信息"),
@@ -691,6 +734,9 @@ struct MainView: View {
                 }
                 .help(WLocalizedString("action.toggleInspector", comment: "显示详细信息"))
                 .accessibilityIdentifier("inspector.toggle")
+                .opacity(tabManager.isShowingSettings ? 0 : 1)
+                .disabled(tabManager.isShowingSettings)
+                .accessibilityHidden(tabManager.isShowingSettings)
             }
         }
     }

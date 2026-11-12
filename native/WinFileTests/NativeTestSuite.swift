@@ -5807,6 +5807,13 @@ enum NativeTestSuite {
         try "b2".write(to: dirB.appendingPathComponent("丙.txt"), atomically: true, encoding: .utf8)
 
         let manager = TabManager(engine: engine, startDirectory: dirA)
+        let settingsManager = TabManager(engine: engine, startDirectory: dirA)
+        let originalTab = settingsManager.activeTab
+        let otherTab = settingsManager.newTab(startDirectory: dirB)
+        settingsManager.isShowingSettings = true
+        check("打开设置不改变现有页签", settingsManager.count == 2 && settingsManager.activeTab.id == otherTab.id && originalTab.model.currentDirectory == dirA)
+        settingsManager.isShowingSettings = false
+        check("返回后保留原来的活动页签", settingsManager.activeTab.id == otherTab.id && settingsManager.count == 2)
         check("初始只有一个页签", manager.count == 1, "\(manager.count)")
         check("初始页签指向起始目录",
               manager.activeModel.currentDirectory?.path == dirA.path,

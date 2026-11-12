@@ -10,6 +10,7 @@ final class BrowserWindowCommands: ObservableObject {
     private let managers = NSMapTable<NSWindow, TabManager>.weakToWeakObjects()
     private var detachedManagers: [UUID: TabManager] = [:]
     var openNewWindow: (() -> Void)?
+    private var settingsRequestedForNextWindow = false
     private weak var observedManager: TabManager?
     private var modelSubscription: AnyCancellable?
     private var notifications = Set<AnyCancellable>()
@@ -61,7 +62,21 @@ final class BrowserWindowCommands: ObservableObject {
         guard managers.object(forKey: window) !== manager else { return }
         managers.setObject(manager, forKey: window)
         ExternalFileRequests.shared.register(manager, window: window)
+        if settingsRequestedForNextWindow {
+            settingsRequestedForNextWindow = false
+            // Registration may happen during a SwiftUI view update.
+            DispatchQueue.main.async { [weak manager] in manager?.isShowingSettings = true }
+        }
         DispatchQueue.main.async { [weak self] in self?.refresh() }
+    }
+
+    func openSettings() {
+        if let manager {
+            manager.isShowingSettings = true
+        } else if let openNewWindow {
+            settingsRequestedForNextWindow = true
+            openNewWindow()
+        }
     }
 
     func prepareDetachedWindow(from source: TabManager, tab: WinFileTab, engine: FSEngine) -> UUID? {

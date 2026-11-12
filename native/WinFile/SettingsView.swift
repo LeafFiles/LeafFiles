@@ -1,4 +1,4 @@
-// 设置窗口（原生 Settings 场景，符合 macOS 规范）
+// 设置页面：导航与设置内容随窗口大小自适应。
 import SwiftUI
 
 struct SettingsView: View {
@@ -14,36 +14,39 @@ struct SettingsView: View {
     @AppStorage("Settings.SelectedPane") private var selectedPane = "general"
 
     var body: some View {
-        HStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 4) {
-                settingsNavigationItem("general", title: L("settings.general", "通用"), icon: "gearshape")
-                settingsNavigationItem("privacy", title: L("settings.privacy", "隐私与授权"), icon: "lock.shield")
-                settingsNavigationItem("sidebar", title: L("settings.sidebar.title", "侧边栏"), icon: "sidebar.left")
-                settingsNavigationItem("associations", title: L("settings.assoc.title", "默认打开方式"), icon: "arrow.up.forward.app")
-                settingsNavigationItem("diagnostics", title: L("settings.diagnostics.title", "诊断"), icon: "stethoscope")
-                settingsNavigationItem("about", title: L("settings.about", "关于"), icon: "info.circle")
-                Spacer(minLength: 0)
-            }
-            .padding(.top, 24)
-            .frame(width: 190)
-            .frame(maxHeight: .infinity)
-            .background(Color(nsColor: .controlBackgroundColor))
-
-            Divider()
-            Group {
-                switch selectedPane {
-                case "privacy": privacy
-                case "sidebar": sidebarSettings
-                case "associations": associationsSettings
-                case "diagnostics": diagnosticsSettings
-                case "about": about
-                default: general
+        GeometryReader { geometry in
+            let compact = geometry.size.width < 560
+            HStack(spacing: 0) {
+                VStack(alignment: .leading, spacing: 4) {
+                    settingsNavigationItem("general", title: L("settings.general", "通用"), icon: "gearshape", compact: compact)
+                    settingsNavigationItem("privacy", title: L("settings.privacy", "隐私与授权"), icon: "lock.shield", compact: compact)
+                    settingsNavigationItem("sidebar", title: L("settings.sidebar.title", "侧边栏"), icon: "sidebar.left", compact: compact)
+                    settingsNavigationItem("associations", title: L("settings.assoc.title", "默认打开方式"), icon: "arrow.up.forward.app", compact: compact)
+                    settingsNavigationItem("diagnostics", title: L("settings.diagnostics.title", "诊断"), icon: "stethoscope", compact: compact)
+                    settingsNavigationItem("about", title: L("settings.about", "关于"), icon: "info.circle", compact: compact)
+                    Spacer(minLength: 0)
                 }
+                .padding(.top, 24)
+                .frame(width: compact ? 52 : 190)
+                .frame(maxHeight: .infinity)
+                .background(Color(nsColor: .controlBackgroundColor))
+
+                Divider()
+                Group {
+                    switch selectedPane {
+                    case "privacy": privacy
+                    case "sidebar": sidebarSettings
+                    case "associations": associationsSettings
+                    case "diagnostics": diagnosticsSettings
+                    case "about": about
+                    default: general(compact: compact)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .background(Color(nsColor: .windowBackgroundColor))
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(Color(nsColor: .windowBackgroundColor))
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(width: 760, height: 560)
         .onAppear { if selectedPane == "categoryScan" { selectedPane = "general" } }
         .sheet(isPresented: $chooseStartFolder) {
             FolderPickerSheet(initialDirectory: startFolderPath.isEmpty ? nil : URL(fileURLWithPath: startFolderPath),
@@ -54,89 +57,106 @@ struct SettingsView: View {
         .sheet(isPresented: $chooseFavorites) { FolderPickerSheet { engine.addFolders($0) } }
     }
 
-    private func settingsNavigationItem(_ id: String, title: String, icon: String) -> some View {
+    private func settingsNavigationItem(_ id: String, title: String, icon: String, compact: Bool) -> some View {
         let selected = selectedPane == id
         return Button { selectedPane = id } label: {
             HStack(spacing: 12) {
                 Image(systemName: icon).font(.system(size: 16)).frame(width: 22)
-                Text(title).font(.system(size: 14, weight: selected ? .semibold : .regular))
-                Spacer(minLength: 0)
+                if !compact {
+                    Text(title).font(.system(size: 14, weight: selected ? .semibold : .regular))
+                    Spacer(minLength: 0)
+                }
             }
             .foregroundStyle(selected ? Color.white : Color.primary)
-            .padding(.horizontal, 18)
+            .padding(.horizontal, compact ? 15 : 18)
             .frame(height: 42)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(selected ? Color.accentColor : Color.clear)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .help(title)
+        .accessibilityLabel(title)
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     private func settingsRow<Control: View>(
-        _ title: String, detail: String? = nil, @ViewBuilder control: () -> Control
+        _ title: String, detail: String? = nil, compact: Bool = false, @ViewBuilder control: () -> Control
     ) -> some View {
         VStack(spacing: 0) {
-            HStack(alignment: .center, spacing: 20) {
-                VStack(alignment: .leading, spacing: 4) {
+            if compact {
+                VStack(alignment: .leading, spacing: 8) {
                     Text(title).font(.system(size: 14))
                     if let detail {
                         Text(detail).font(.caption).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
+                    control()
                 }
-                Spacer(minLength: 12)
-                control()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 14)
+            } else {
+                HStack(alignment: .center, spacing: 20) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(title).font(.system(size: 14))
+                        if let detail {
+                            Text(detail).font(.caption).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    Spacer(minLength: 12)
+                    control()
+                }
+                .padding(.vertical, 14)
             }
-            .padding(.vertical, 14)
             Divider()
         }
     }
 
-    private var general: some View {
+    private func general(compact: Bool) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 Text(L("settings.general", "通用")).font(.title3.weight(.semibold))
                     .padding(.bottom, 18)
                 Divider()
-                settingsRow(L("settings.language", "语言"), detail: L("settings.language.hint", "切换后立即生效；不支持的系统语言使用英文。")) {
+                settingsRow(L("settings.language", "语言"), detail: L("settings.language.hint", "切换后立即生效；不支持的系统语言使用英文。"), compact: compact) {
                     Picker(L("settings.language", "语言"), selection: $localization.language) {
                         Text(L("settings.language.system", "跟随系统")).tag(AppLanguage.system)
                         Text("简体中文").tag(AppLanguage.simplifiedChinese)
                         Text("English").tag(AppLanguage.english)
                     }.labelsHidden().frame(width: 135)
                 }
-                settingsRow(L("icon.settings.label", "Dock 图标"), detail: L("icon.settings.hint", "仅在应用运行时改变 Dock 图标；启动台和访达显示绿色图标。")) {
+                settingsRow(L("icon.settings.label", "Dock 图标"), detail: L("icon.settings.hint", "仅在应用运行时改变 Dock 图标；启动台和访达显示绿色图标。"), compact: compact) {
                     Picker(L("icon.settings.label", "Dock 图标"), selection: Binding(
                         get: { iconPreferences.choice }, set: { iconPreferences.select($0) })) {
                         Text(L("icon.settings.original", "经典黄色")).tag(AppIconChoice.original)
                         Text(L("icon.settings.green", "绿色叶子")).tag(AppIconChoice.green)
                     }.labelsHidden().frame(width: 135)
                 }
-                settingsRow(L("settings.layout", "默认视图")) {
+                settingsRow(L("settings.layout", "默认视图"), compact: compact) {
                     Picker(L("settings.layout", "默认视图"), selection: $layoutRaw) {
                         Text(L("layout.details", "详细信息")).tag(ViewLayout.details.rawValue)
                         Text(L("layout.icons", "大图标")).tag(ViewLayout.icons.rawValue)
                     }.labelsHidden().frame(width: 135)
                 }
-                settingsRow(L("settings.showHidden", "显示隐藏文件")) {
+                settingsRow(L("settings.showHidden", "显示隐藏文件"), compact: compact) {
                     Toggle(L("settings.showHidden", "显示隐藏文件"), isOn: $showHidden).labelsHidden().toggleStyle(.switch)
                 }
-                settingsRow(L("update.automatic", "每次启动时检查更新"), detail: L("update.hint", "发现新版本时提示安装；可以跳过此版本或下次再说。")) {
+                settingsRow(L("update.automatic", "每次启动时检查更新"), detail: L("update.hint", "发现新版本时提示安装；可以跳过此版本或下次再说。"), compact: compact) {
                     Toggle(L("update.automatic", "每次启动时检查更新"), isOn: Binding(
                         get: { updater.automaticallyChecksForUpdates },
                         set: { updater.setAutomaticallyChecksForUpdates($0) })).labelsHidden().toggleStyle(.switch)
                 }
                 settingsRow(L("settings.startFolder", "启动时打开"), detail: startFolderPath.isEmpty
                             ? L("settings.startFolder.default", "上次使用的位置")
-                            : (startFolderPath as NSString).abbreviatingWithTildeInPath) {
+                            : (startFolderPath as NSString).abbreviatingWithTildeInPath, compact: compact) {
                     HStack {
                         Button(L("settings.choose", "选择…")) { chooseStartFolder = true }
                         Button(L("settings.clear", "清除")) { startFolderPath = "" }.disabled(startFolderPath.isEmpty)
                     }
                 }
             }
-            .padding(.horizontal, 32).padding(.vertical, 28)
+            .padding(.horizontal, compact ? 16 : 32).padding(.vertical, 28)
         }
     }
 

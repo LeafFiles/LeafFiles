@@ -191,6 +191,7 @@
 
 /* 设置 */
 "settings.general" = "通用";
+"settings.back" = "返回";
 "settings.privacy" = "隐私与授权";
 "settings.about" = "关于";
 "settings.layout" = "默认视图";

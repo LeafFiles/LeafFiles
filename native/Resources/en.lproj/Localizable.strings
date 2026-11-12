@@ -178,6 +178,7 @@
 "engine.notSandboxed" = "Local mode: full disk access";
 
 "settings.general" = "General";
+"settings.back" = "Back";
 "settings.privacy" = "Privacy";
 "settings.about" = "About";
 "settings.layout" = "Default view";

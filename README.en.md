@@ -46,7 +46,15 @@ LeafFiles brings these tasks together in a native macOS interface, with file sca
 
 As of October 26, 2026, the recent fixes have passed regression checks, with no obvious issues found in local use. LeafFiles will stay focused on browsing, organizing and managing files. Future work will prioritize interface improvements, performance and bug fixes; unrelated features are outside the project’s scope. Please report any issues on [GitHub](https://github.com/LeafFiles/LeafFiles/issues).
 
-## What’s new in v2.5.0
+## What’s new in v2.5.1
+
+- Settings now opens inside the app from the sidebar or menu. Returning restores your tabs, split view and sidebars.
+- The settings title bar matches the main window, with a simpler title and back control and keyboard shortcuts.
+- Thanks to [@KaKi87](https://github.com/KaKi87) for suggesting in-app settings in [Issue #7](https://github.com/LeafFiles/LeafFiles/issues/7).
+
+See the [v2.5.1 release notes](docs/releases/v2.5.1.md).
+
+### v2.5.0 update
 
 - Browse storage cleanup results by category; scan settings and software cleanup have been streamlined. Changed scan settings require a rescan.
 - Application and category scan settings use sidebar navigation, and long paths are easier to read.
