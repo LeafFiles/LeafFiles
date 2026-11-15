@@ -300,7 +300,12 @@ enum SnapshotRenderer {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: height),
                               styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = softwareMode ? "WinFile — 软件清理测试" : "WinFile — 空间清理测试"
-        let content = AnyView(CleanupHubView(model: model, dialog: .constant(nil)))
+        let content = AnyView(ZStack {
+            CleanupHubView(model: model, dialog: .constant(nil))
+            if CommandLine.arguments.contains("--cleanup-progress-preview") {
+                CleanupProgressOverlay(completed: 37, total: 120, isStopping: false, stop: {})
+            }
+        })
         let hosting = NSHostingView(rootView: content
             .environment(\.locale, Localization.shared.locale))
         hosting.sizingOptions = []; hosting.frame = NSRect(x: 0, y: 0, width: width, height: height)

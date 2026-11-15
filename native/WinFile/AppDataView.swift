@@ -212,17 +212,20 @@ struct ArchiveProgressBanner: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            if let fraction = progress.fraction { ProgressView(value: fraction).frame(width: 70) }
-            else { ProgressView().controlSize(.small) }
+            if let fraction = progress.fraction { ProgressView(value: fraction).frame(width: 110) }
+            else { ProgressView().progressViewStyle(.linear).frame(width: 110) }
             Text(progress.title)
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer(minLength: 8)
             if !progress.isCompressing {
                 Text("\(progress.index) / \(progress.total)").font(.caption).monospacedDigit()
-                if let fraction = progress.fraction { Text("\(Int(fraction * 100))%").font(.caption).monospacedDigit() }
-                Button(L("button.cancel", "取消"), action: cancel)
             }
+            if let fraction = progress.fraction {
+                Text("\(Int(fraction * 100))%" + (progress.isCompressing ? " · " + L("archive.byEntries", "按文件数") : ""))
+                    .font(.caption).monospacedDigit()
+            }
+            Button(L("button.cancel", "取消"), action: cancel)
         }
         .padding(12)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))

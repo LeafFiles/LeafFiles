@@ -46,7 +46,16 @@ LeafFiles brings these tasks together in a native macOS interface, with file sca
 
 As of October 26, 2026, the recent fixes have passed regression checks, with no obvious issues found in local use. LeafFiles will stay focused on browsing, organizing and managing files. Future work will prioritize interface improvements, performance and bug fixes; unrelated features are outside the project’s scope. Please report any issues on [GitHub](https://github.com/LeafFiles/LeafFiles/issues).
 
-## What’s new in v2.5.1
+## What’s new in v2.5.2
+
+- Fixed a possible infinite loop when updating folder statistics after storage cleanup; improved open-file checks for large batches.
+- Cleanup now shows a centered progress view and stop control, with results, scan details and history displayed within the page.
+- Added archive progress feedback and stoppable batch deletion; simplified the bottom of the sidebar.
+- Improved compatibility with file clipboard formats and UU Remote placeholders. UU Remote cross-device transfers still need further verification on real devices.
+
+See the [v2.5.2 release notes](docs/releases/v2.5.2.md).
+
+### v2.5.1 update
 
 - Settings now opens inside the app from the sidebar or menu. Returning restores your tabs, split view and sidebars.
 - The settings title bar matches the main window, with a simpler title and back control and keyboard shortcuts.

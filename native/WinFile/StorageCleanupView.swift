@@ -17,9 +17,17 @@ struct StorageCleanupView: View {
             let compact = geometry.size.height < 560
             VStack(alignment: .leading, spacing: compact ? 6 : 10) {
                 header
-                filters
-                resultsContent.frame(minHeight: 80, maxHeight: .infinity)
-                footer
+                if let message = store.message, !showsFolderPicker {
+                    CleanupMessageBanner(message: message, showsDetails: showsDetails,
+                                         showDetails: { showsDetails = true }, dismiss: store.dismissMessage)
+                }
+                if showsDetails {
+                    details.frame(minHeight: 80, maxHeight: .infinity)
+                } else {
+                    filters
+                    resultsContent.frame(minHeight: 80, maxHeight: .infinity)
+                    footer
+                }
             }
             .padding(compact ? 10 : 16)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -42,8 +50,6 @@ struct StorageCleanupView: View {
             showsFilters = false
             settingsPage = 0
         }
-        .onChange(of: store.message) { if $0 != nil && !showsFolderPicker { showsDetails = true } }
-        .popover(isPresented: $showsDetails) { details }
         .alert(L("cleanup.confirm", "将所选文件移到废纸篓？"), isPresented: $store.confirmsTrash) {
             Button(L("action.moveToTrash", "移到废纸篓"), role: .destructive) { store.clean() }
             Button(L("button.cancel", "取消"), role: .cancel) {}
@@ -458,9 +464,8 @@ struct StorageCleanupView: View {
                     HStack { Spacer(); trashAction }
                 }
             }
-            if store.busy {
-                Text(store.isScanning ? L("cleanup.progress", "已检查 %d 项，发现 %d 个候选", store.progress.visited, store.progress.candidates)
-                     : L("cleanup.cleaning", "正在复查并清理第 %d 项…", store.cleaningIndex))
+            if store.isScanning {
+                Text(L("cleanup.progress", "已检查 %d 项，发现 %d 个候选", store.progress.visited, store.progress.candidates))
                     .font(.caption2).foregroundStyle(.secondary)
             } else if !store.selection.isEmpty {
                 Text(L("cleanup.trashNote", "移到废纸篓不会立即释放磁盘空间；可用 ⌘Z 撤销成功的移动。占用受 APFS 共享块影响，仅作估算。"))
@@ -503,11 +508,20 @@ struct StorageCleanupView: View {
         }.buttonStyle(TrashActionStyle()).disabled(store.busy || store.scanNeedsRefresh || store.selection.isEmpty)
     }
     private var details: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(L("cleanup.details", "扫描详情 / 忽略 / 历史")).font(.headline)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                Button { showsDetails = false } label: {
+                    Label(L("cleanup.backToResults", "返回清理"), systemImage: "chevron.left")
+                }.buttonStyle(.plain).foregroundStyle(Color.accentColor)
+                Text(L("cleanup.details", "扫描详情 / 忽略 / 历史")).font(.headline)
+                Spacer()
+            }
+            Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    if let message = store.message { Text(message).font(.caption).textSelection(.enabled) }
+                    if let message = store.message, message.contains("\n") {
+                        Text(message).font(.caption).textSelection(.enabled)
+                    }
                     Text(L("cleanup.scannedDisk", "已扫描磁盘占用（估算）") + "  " + FileItem.formatSize(store.result.scannedBytes))
                         .font(.caption).foregroundStyle(.secondary)
                     Text(store.isBaidu ? L("software.baiduProtection", "仅处理明确下载目录中的文件，以及已识别的缓存和日志。不读取下载记录数据库；跳过未完成下载、数据库、凭据、隐藏文件、符号链接及硬链接。清理时检查百度网盘运行及文件占用状态，默认不勾选文件。") : store.softwareMode ? L("software.protection", "仅处理当前软件的缓存和日志。跳过运行中的应用、数据库、凭据、持久数据、受保护缓存、符号链接及硬链接；无法确认安全状态的项目会保留。") : L("cleanup.protection", "清理前检查应用运行和文件占用状态，跳过数据库、凭据、受保护缓存、符号链接及硬链接；无法确认安全状态的文件会保留。附件和下载文件是个人资料，请核对后再清理。"))
@@ -516,10 +530,17 @@ struct StorageCleanupView: View {
                     if !store.softwareMode {
                     Text(L("cleanup.distribution", "已扫描的大文件目录范围占用")).font(.subheadline.bold())
                     ForEach(store.result.folders.prefix(12)) { usage in
-                        HStack { Button(usage.url.lastPathComponent) {
+                        Button {
                             if let manager = model.tabManager { manager.newTab(startDirectory: usage.url) }
                             else { model.selectFolder(usage.url) }
-                        }; Spacer(); Text(FileItem.formatSize(usage.bytes)) }.font(.caption)
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "folder").foregroundStyle(.secondary)
+                                Text(usage.url.lastPathComponent).lineLimit(1)
+                                Spacer()
+                                Text(FileItem.formatSize(usage.bytes)).foregroundStyle(.secondary).monospacedDigit()
+                            }.contentShape(Rectangle())
+                        }.buttonStyle(.plain).help(usage.url.path).font(.caption)
                     }
                     Button(L("cleanup.defaultFolders", "恢复默认大文件扫描范围")) { store.useDefaultFolders() }.disabled(store.busy)
                     }
@@ -534,9 +555,8 @@ struct StorageCleanupView: View {
                     ForEach(store.history) { entry in
                         Text("\(entry.softwareName.map { $0 + " · " } ?? "")\(FileItem.formatDate(entry.date)) · \(entry.count) · \(FileItem.formatSize(entry.bytes)) · \(entry.failures) \(L("cleanup.skipped", "项跳过 / 失败"))\(entry.cancelled ? " · " + L("button.cancel", "取消") : "")").font(.caption)
                     }
-                }.frame(maxWidth: .infinity, alignment: .leading)
-            }.frame(maxHeight: 520)
-            HStack { Spacer(); Button(L("button.done", "完成")) { showsDetails = false } }
-        }.padding(18).frame(width: 560)
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 4)
+            }
+        }.padding(16).modifier(InsetSurface())
     }
 }

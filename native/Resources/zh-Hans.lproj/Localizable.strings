@@ -388,6 +388,15 @@
 "action.compress" = "压缩为 zip";
 "action.extractHere" = "解压到当前文件夹";
 "archive.compressing" = "正在压缩 %@";
+"archive.byEntries" = "按文件数";
+"archive.compressCancelled" = "已停止压缩。";
+"archive.error.destinationInsideSource" = "请选择压缩源文件夹之外的保存位置。";
+"delete.progress" = "已处理 %d / %d 项";
+"delete.stop" = "停止删除";
+"delete.stopping" = "正在停止…";
+"delete.stopHint" = "当前项目处理完成后停止，已删除的项目不会自动恢复。";
+"delete.cancelled" = "已停止：完成 %d 项，失败 %d 项。";
+"delete.finished" = "已删除 %d 项，失败 %d 项。";
 "archive.extracting" = "正在解压 %@";
 "archive.defaultName" = "归档";
 "archive.error.noSelection" = "请先选择要压缩的项目";
@@ -763,6 +772,9 @@
 "operation.cancelledSuffix" = "（已取消）";
 
 "operation.sourceMissing" = "源文件不存在或不可读取：%@";
+"operation.pasteNoFiles" = "剪贴板中没有可用文件；跨设备复制时，请确认文件已传输到本机。";
+"operation.uuRemotePending" = "已交由 UU 远程接收，请在 UU 远程中查看传输结果";
+"operation.uuRemoteCopyOnly" = "UU 远程文件请使用普通粘贴，不能使用移动粘贴。";
 
 "scan.badgeScope" = "初始扫描范围内的计数；可进入分类继续深入扫描。";
 
@@ -928,6 +940,15 @@
 "cleanup.changed" = "已变化、被忽略或不再符合规则：%@";
 "cleanup.chooseFolder" = "选择大文件扫描目录…";
 "cleanup.cleaning" = "正在复查并清理第 %d 项…";
+"cleanup.cleaningTitle" = "正在清理…";
+"cleanup.resultDetails" = "查看详情";
+"cleanup.dismissResult" = "关闭清理结果";
+"cleanup.backToResults" = "返回清理";
+"cleanup.cleaningProgress" = "已处理 %d / %d 项";
+"cleanup.cleaningDetail" = "正在检查文件状态并移到废纸篓。";
+"cleanup.stopping" = "正在停止…";
+"cleanup.stop" = "停止清理";
+"cleanup.stopHint" = "当前项目处理完成后停止，已移到废纸篓的文件不会自动恢复。";
 "cleanup.confirm" = "将所选文件移到废纸篓？";
 "cleanup.confirmDetail" = "共 %d 项（%@）。附件、下载文件、安装包和大文件可能是你需要保留的资料，请先核对。执行前会复查文件身份、应用运行及占用状态。";
 "cleanup.defaultFolders" = "恢复默认大文件扫描范围";
@@ -947,6 +968,7 @@
 "cleanup.oldest" = "最早修改优先";
 "cleanup.open" = "文件被占用或无法确认占用状态，已跳过：%@";
 "cleanup.outcome" = "已移到废纸篓 %d 项（%@），跳过或失败 %d 项。";
+"cleanup.failuresOmitted" = "另有 %d 项跳过或失败，未在此列出。";
 "cleanup.owner" = "应用 / 来源";
 "cleanup.partial" = "扫描有上限或部分目录无法读取，结果不完整。可在扫描设置中选择单一类别缩小范围。";
 "cleanup.progress" = "已检查 %d 项，发现 %d 个候选";

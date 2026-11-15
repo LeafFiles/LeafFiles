@@ -72,6 +72,8 @@ final class StorageCleanupModel: ObservableObject {
     @Published private(set) var scanNeedsRefresh = false
     @Published private(set) var progress = StorageCleanupProgress()
     @Published private(set) var cleaningIndex = 0
+    @Published private(set) var cleaningTotal = 0
+    @Published private(set) var isStoppingCleanup = false
     @Published var selection = Set<String>()
     @Published var search = "" { didSet { if search != oldValue { filtersChanged() } } }
     @Published var category = "all" { didSet { if category != oldValue { filtersChanged() } } }
@@ -282,7 +284,10 @@ final class StorageCleanupModel: ObservableObject {
         ignored.removeAll { $0 == url }; defaults.set(ignored.map(\.path), forKey: Self.ignoreKey)
         invalidateScanSettings()
     }
-    func cancel() { task?.cancel() }
+    func cancel() {
+        if isCleaning { isStoppingCleanup = true }
+        task?.cancel()
+    }
     func scan() {
         guard !busy else { return }
         let id = UUID(); generation = id
@@ -313,25 +318,45 @@ final class StorageCleanupModel: ObservableObject {
         guard !isCleaning else { return }
         selection = []; pendingFiles = []; confirmsTrash = false
     }
+    func dismissMessage() { message = nil }
+    static func outcomeMessage(_ outcome: StorageCleanupOutcome) -> String {
+        let limit = 30
+        let details = outcome.failures.prefix(limit)
+        let omitted = outcome.failures.count - details.count
+        return L("cleanup.outcome", "已移到废纸篓 %d 项（%@），跳过或失败 %d 项。", outcome.removed.count,
+                 FileItem.formatSize(outcome.bytes), outcome.failures.count)
+            + (outcome.cancelled ? "\n" + L("cleanup.cancelled", "已取消，结果不完整。") : "")
+            + (details.isEmpty ? "" : "\n" + details.joined(separator: "\n"))
+            + (omitted == 0 ? "" : "\n" + L("cleanup.failuresOmitted", "另有 %d 项跳过或失败，未在此列出。", omitted))
+    }
     func clean() {
         guard !busy, !scanNeedsRefresh, !FileOperationHistory.shared.isBusy, !pendingFiles.isEmpty, var config = configurationAtScan else { return }
         let files = pendingFiles; pendingFiles = []
+        let previousResult = result
         // The confirmed scan fixes the eligibility settings; the current ignore
         // list can only further restrict that plan.
         config.ignored = ignored; config.now = Date()
-        isCleaning = true; message = nil; cleaningIndex = 0
+        isCleaning = true; message = nil; cleaningIndex = 0; cleaningTotal = files.count; isStoppingCleanup = false
+        TabDiagnostics.shared.record("cleanup.started", detail: "count=\(files.count) software=\(softwareMode)")
         task = Task { [weak self] in
             let worker = Task.detached(priority: .utility) {
-                StorageCleanupService.trash(files, config: config, cancelled: { Task.isCancelled }) { index in
+                var lastProgress = 0.0
+                let outcome = StorageCleanupService.trash(files, config: config, cancelled: { Task.isCancelled }) { index in
+                    let now = ProcessInfo.processInfo.systemUptime
+                    guard index == 1 || now - lastProgress >= 0.2 else { return }
+                    lastProgress = now
                     Task { @MainActor [weak self] in
                         guard let self, self.isCleaning else { return }
                         self.cleaningIndex = index
                     }
                 }
+                var updatedResult = previousResult
+                updatedResult.removeTrashedFiles(outcome.removed)
+                return (outcome, updatedResult)
             }
-            let outcome = await withTaskCancellationHandler(operation: { await worker.value }, onCancel: { worker.cancel() })
+            let (outcome, updatedResult) = await withTaskCancellationHandler(operation: { await worker.value }, onCancel: { worker.cancel() })
             guard let self else { return }
-            self.result.removeTrashedFiles(outcome.removed)
+            self.result = updatedResult
             self.selection.subtract(outcome.removed); self.rebuild()
             FileOperationHistory.shared.record(title: self.softwareMode ? self.softwareTitle : L("cleanup.title", "空间清理"), moves: outcome.moves)
             let entry = StorageCleanupHistoryEntry(date: Date(), count: outcome.removed.count, bytes: outcome.bytes,
@@ -339,11 +364,9 @@ final class StorageCleanupModel: ObservableObject {
                                                    softwareName: self.softwareMode ? self.softwareTitle : nil)
             self.history.insert(entry, at: 0); self.history = Array(self.history.prefix(30))
             if let data = try? JSONEncoder().encode(self.history) { self.defaults.set(data, forKey: Self.historyKey) }
-            self.message = L("cleanup.outcome", "已移到废纸篓 %d 项（%@），跳过或失败 %d 项。", outcome.removed.count,
-                             FileItem.formatSize(outcome.bytes), outcome.failures.count)
-                + (outcome.cancelled ? "\n" + L("cleanup.cancelled", "已取消，结果不完整。") : "")
-                + (outcome.failures.isEmpty ? "" : "\n" + outcome.failures.joined(separator: "\n"))
-            self.isCleaning = false; self.task = nil
+            self.message = Self.outcomeMessage(outcome)
+            self.isCleaning = false; self.isStoppingCleanup = false; self.task = nil
+            TabDiagnostics.shared.record("cleanup.finished", detail: "moved=\(outcome.removed.count) skipped=\(outcome.failures.count) cancelled=\(outcome.cancelled)")
         }
     }
 }

@@ -11,6 +11,8 @@ struct FileTransferProgress {
 }
 struct FileTransferOutcome {
     var completed: [URL] = []
+    /// UU Remote completes the actual transfer independently after receiving its marker.
+    var delegatedRemoteTransfers = 0
     var moves: [FileMoveRecord] = []
     var failures: [String] = []
     var cancelled = false
@@ -18,11 +20,73 @@ struct FileTransferOutcome {
     var destination: URL?
     var isMoving = false
     var clipboardGeneration: Int?
+
+    var summary: String {
+        let finished = L("operation.finished", "已完成 %d 项，失败 %d 项%@", completed.count,
+                         failures.count, cancelled ? L("operation.cancelledSuffix", "（已取消）") : "")
+        guard delegatedRemoteTransfers > 0 else { return finished }
+        return finished + " · " + L("operation.uuRemotePending", "已交由 UU 远程接收，请在 UU 远程中查看传输结果")
+    }
+}
+
+struct FileDeletionProgress {
+    let total: Int
+    var processed = 0
+    var currentName = ""
+    var isStopping = false
+}
+
+struct FileDeletionOutcome {
+    var completed: [URL] = []
+    var failures: [String] = []
+    var cancelled = false
+}
+
+/// A native deletion cannot be interrupted safely halfway through a folder.
+/// Cancellation prevents starting the next item and preserves partial results.
+enum FileDeletionService {
+    static func delete(_ urls: [URL], token: ScanCancellation,
+                       remove: (URL) throws -> Void,
+                       onProgress: (FileDeletionProgress) -> Void = { _ in }) -> FileDeletionOutcome {
+        var outcome = FileDeletionOutcome()
+        var progress = FileDeletionProgress(total: urls.count)
+        var lastUpdate = 0.0
+        for url in urls {
+            if token.isCancelled { outcome.cancelled = true; break }
+            progress.currentName = url.lastPathComponent
+            let now = ProcessInfo.processInfo.systemUptime
+            if progress.processed == 0 || now - lastUpdate >= 0.15 {
+                onProgress(progress); lastUpdate = now
+            }
+            do { try remove(url); outcome.completed.append(url) }
+            catch { outcome.failures.append("\(url.lastPathComponent): \(error.localizedDescription)") }
+            progress.processed += 1
+        }
+        outcome.cancelled = outcome.cancelled || (token.isCancelled && progress.processed < urls.count)
+        onProgress(progress)
+        return outcome
+    }
 }
 
 /// Copies metadata and data through macOS copyfile into private destination staging.
 /// The callback reports actual copied bytes and can interrupt the current data stream.
 enum FileTransferService {
+    private enum TransferError: LocalizedError {
+        case uuRemoteMove
+        var errorDescription: String? {
+            L("operation.uuRemoteCopyOnly", "UU 远程文件请使用普通粘贴，不能使用移动粘贴。")
+        }
+    }
+    static var uuRemoteClipboardDirectory: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/com.netease.uuremote/Clipboard", isDirectory: true)
+    }
+
+    static func isUURemoteMarker(_ item: FileItem, clipboardDirectory: URL) -> Bool {
+        item.url.deletingLastPathComponent().standardizedFileURL.resolvingSymlinksInPath() ==
+            clipboardDirectory.standardizedFileURL.resolvingSymlinksInPath()
+            && item.name.hasPrefix(".uuremote_") && !item.isDirectory && !item.isSymlink && item.size == 0
+    }
     private final class CopyContext {
         let token: ScanCancellation
         let update: (Int64, String) -> Void
@@ -63,7 +127,8 @@ enum FileTransferService {
     }
 
     static func transfer(_ items: [FileItem], to directory: URL, mode: FSEngine.TransferMode,
-                         token: ScanCancellation, onProgress: @escaping (FileTransferProgress) -> Void) -> FileTransferOutcome {
+                         token: ScanCancellation, uuClipboardDirectory: URL = uuRemoteClipboardDirectory,
+                         onProgress: @escaping (FileTransferProgress) -> Void) -> FileTransferOutcome {
         var outcome = FileTransferOutcome(destination: directory, isMoving: mode == .move)
         var progress = FileTransferProgress(total: items.count, isMoving: mode == .move)
         onProgress(progress)
@@ -84,6 +149,17 @@ enum FileTransferService {
             progress.currentName = item.name
             onProgress(progress)
             do {
+                if isUURemoteMarker(item, clipboardDirectory: uuClipboardDirectory) {
+                    guard mode == .copy else { throw TransferError.uuRemoteMove }
+                    // UU watches for this exact marker in the final folder and writes the
+                    // real files beside it asynchronously. Staging or renaming it breaks that handoff.
+                    try fm.copyItem(at: item.url, to: directory.appendingPathComponent(item.name))
+                    outcome.delegatedRemoteTransfers += 1
+                    finished.insert(item.id)
+                    progress.completed += 1
+                    onProgress(progress)
+                    continue
+                }
                 let destinationPath = directory.standardizedFileURL.resolvingSymlinksInPath().path
                 let sourcePath = item.url.standardizedFileURL.resolvingSymlinksInPath().path
                 if item.isDirectory && !item.isSymlink && (destinationPath == sourcePath || destinationPath.hasPrefix(sourcePath + "/")) { throw FSError.recursiveTransfer(item.name) }

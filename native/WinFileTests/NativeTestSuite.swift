@@ -71,6 +71,21 @@ enum NativeTestSuite {
         print("== WinFile 逻辑层测试 ==")
         print("沙盒目录：\(sandbox.path)")
 
+        if CommandLine.arguments.contains("--test-operation-progress") {
+            do {
+                try testOperations(sandbox)
+                try testArchive()
+                try testArchiveMacMetadata(sandbox)
+                try testExpandedArchives(sandbox)
+            } catch {
+                TestReporter.shared.failures.append("异常：\(error.localizedDescription)")
+            }
+            let reporter = TestReporter.shared
+            print("\n通过 \(reporter.passed) 项，失败 \(reporter.failures.count) 项")
+            for failure in reporter.failures { print("  - \(failure)") }
+            return
+        }
+
         testCategorization()
         testVolumeCapacity()
         do {
@@ -618,6 +633,24 @@ enum NativeTestSuite {
         let reducedBytes = reduced.scannedBytes
         reduced.removeTrashedFiles([keeperFile.id])
         check("重复移除结果不会重复扣减占用", reduced.scannedBytes == reducedBytes)
+        var withoutFolderBucket = scan
+        withoutFolderBucket.folders = []
+        withoutFolderBucket.removeTrashedFiles([keeperFile.id])
+        check("清理缺少目录统计桶时在根目录终止并更新结果", !withoutFolderBucket.files.contains { $0.id == keeperFile.id } && withoutFolderBucket.scannedBytes == scan.scannedBytes - keeperFile.allocated)
+        var rootBucket = scan
+        rootBucket.folders = [StorageFolderUsage(url: URL(fileURLWithPath: "/"), bytes: keeperFile.allocated, files: 1)]
+        rootBucket.removeTrashedFiles([keeperFile.id])
+        check("清理时可更新根目录统计桶", rootBucket.folders.isEmpty)
+        var largeUnbucketed = StorageCleanupScanResult()
+        largeUnbucketed.files = (0..<14_630).map { index in
+            StorageCleanupFile(url: home.appendingPathComponent("Library/Logs/mock.app/file-\(index).log"), rule: keeperFile.rule,
+                               snapshot: keeperFile.snapshot, parentIdentity: keeperFile.parentIdentity,
+                               rootIdentity: keeperFile.rootIdentity, allocated: keeperFile.allocated)
+        }
+        largeUnbucketed.scannedBytes = keeperFile.allocated * Int64(largeUnbucketed.files.count)
+        let removedEight = Set(largeUnbucketed.files.prefix(8).map(\.id))
+        largeUnbucketed.removeTrashedFiles(removedEight)
+        check("大量扫描结果清理无目录统计的八个文件后正常完成", largeUnbucketed.files.count == 14_622 && largeUnbucketed.scannedBytes == keeperFile.allocated * 14_622)
         check("候选按稳定大小顺序排列", zip(scan.files, scan.files.dropFirst()).allSatisfy { $0.size >= $1.size })
         var appScope = config; appScope.kinds = [.cache, .log]; appScope.bundleIDs = ["COM.EXAMPLE.EDITOR"]
         let appScan = StorageCleanupService.scan(appScope, running: [])
@@ -712,6 +745,26 @@ enum NativeTestSuite {
         // Force file-count and sorting regressions beyond one page.
         for index in 0..<410 { _ = try write("Documents/Pagination/file-\(index).bin", size: 40 + index) }
         let many = StorageCleanupService.scan(config, running: [])
+        let batchFiles = Array(many.files.filter { $0.url.path.contains("/Pagination/") }.prefix(40))
+        let batchHandle = try FileHandle(forReadingFrom: batchFiles[0].url)
+        let states = StorageCleanupService.openFileStates(batchFiles.map(\.url))
+        check("批量占用检查识别打开和关闭的文件", states?[batchFiles[0].id] == true && states?[batchFiles[1].id] == false)
+        let unusualName = try write("Documents/Pagination/空 格\n文件.bin", size: 100)
+        let unusualHandle = try FileHandle(forReadingFrom: unusualName)
+        check("特殊文件名无法精确匹配时安全回退", StorageCleanupService.openFileStates([unusualName]) == nil && StorageCleanupService.fileIsOpen(unusualName) == true)
+        try unusualHandle.close()
+        check("批量占用检查出错时不判定文件安全", StorageCleanupService.openFileStates([home.appendingPathComponent("missing-probe-file")]) == nil)
+        var simulatedMoves = 0
+        let batchOutcome = StorageCleanupService.trash(batchFiles, config: config, running: { [] }, move: { _ in
+            simulatedMoves += 1; return nil
+        })
+        check("批量清理保留占用文件并处理其余文件", simulatedMoves == 39 && batchOutcome.removed.count == 39 && batchOutcome.failures.count == 1 && !batchOutcome.removed.contains(batchFiles[0].id))
+        try batchHandle.close()
+        check("取消时批量占用检查不返回可清理状态", StorageCleanupService.openFileStates(batchFiles.map(\.url), cancelled: { true }) == nil)
+        var largeFailure = StorageCleanupOutcome()
+        largeFailure.failures = (0..<100).map { "failure-\($0)" }
+        let boundedMessage = StorageCleanupModel.outcomeMessage(largeFailure)
+        check("大量失败只展示有限明细并保留总数", boundedMessage.contains("failure-29") && !boundedMessage.contains("failure-30") && boundedMessage.contains("100") && boundedMessage.contains("70"))
         let domain = "WinFile.StorageCleanupTests." + UUID().uuidString
         let defaults = UserDefaults(suiteName: domain)!
         defer { defaults.removePersistentDomain(forName: domain) }
@@ -1309,18 +1362,26 @@ enum NativeTestSuite {
         try fm.createSymbolicLink(at: image, withDestinationURL: outside)
         check("扫描后替换为符号链接会跳过", !WeChatCleanupService.isUnchanged(photo))
         var attempted: [URL] = []
-        let outcome = WeChatCleanupService.trash(scanned.files) { url in
+        var wechatProgress: [Int] = []
+        let outcome = WeChatCleanupService.trash(scanned.files, progress: { wechatProgress.append($0) }) { url in
             attempted.append(url)
             throw NSError(domain: "FixtureTrashFailure", code: 1)
         }
         check("清理只尝试仍未变化的附件", attempted == [video])
         check("部分失败和跳过逐项报告", outcome.failures.count == 3 && outcome.removed.isEmpty)
+        check("微信清理进度包含已跳过及失败项目", wechatProgress == Array(1...scanned.files.count))
         check("失败时原文件保留", fm.fileExists(atPath: video.path))
+        var stopWechat = false
+        var stoppedProgress: [Int] = []
+        let stopped = WeChatCleanupService.trash([clip, clip], cancelled: { stopWechat }, progress: { stoppedProgress.append($0) }) { _ in
+            stopWechat = true
+        }
+        check("停止微信清理后不处理下一项", stopped.cancelled && stopped.removed.count == 1 && stoppedProgress == [1] && fm.fileExists(atPath: video.path))
         let fixtureTrash = home.appendingPathComponent("FixtureTrash")
         try fm.createDirectory(at: fixtureTrash, withIntermediateDirectories: true)
-        let success = WeChatCleanupService.trash([clip]) { url in
+        let success = WeChatCleanupService.trash([clip], moveToTrash: { url in
             try fm.moveItem(at: url, to: fixtureTrash.appendingPathComponent(url.lastPathComponent))
-        }
+        })
         check("清理成功只报告成功项", success.removed == Set([video.path]) && success.failures.isEmpty)
         check("清理操作没有碰到外部链接目标", (try? Data(contentsOf: outside)) == Data("outside".utf8))
         let engine = FSEngine()
@@ -1570,6 +1631,19 @@ enum NativeTestSuite {
         check("跨页签共享复制内容", b.clipboard?.urls.map { FileItem.canonicalID(for: $0) } == [FileItem.canonicalID(for: small)] && b.canPaste)
         b.paste(); wait(b)
         check("跨页签粘贴复制到目标目录", fm.fileExists(atPath: target.appendingPathComponent("alpha.pdf").path))
+        let legacyFile = source.appendingPathComponent("旧版剪贴板 测试.txt")
+        try Data("legacy contents".utf8).write(to: legacyFile)
+        pb.clearContents()
+        pb.setPropertyList([legacyFile.path], forType: NSPasteboard.PasteboardType("NSFilenamesPboardType"))
+        check("识别其他应用提供的旧版文件剪贴板", b.clipboard?.mode == .copy && b.canPaste)
+        b.paste(); wait(b)
+        let legacyResult = target.appendingPathComponent(legacyFile.lastPathComponent)
+        check("旧版文件剪贴板粘贴后保留完整内容", (try? Data(contentsOf: legacyResult)) == Data("legacy contents".utf8))
+        try fm.removeItem(at: legacyFile)
+        try fm.removeItem(at: legacyResult)
+        pb.clearContents()
+        pb.setString("https://example.com/not-a-file", forType: .string)
+        check("普通文本不会被当作文件粘贴", b.clipboard == nil && !b.canPaste)
         let moveFolder = source.appendingPathComponent("Move by shortcut")
         try fm.createDirectory(at: moveFolder, withIntermediateDirectories: true)
         try Data("nested".utf8).write(to: moveFolder.appendingPathComponent("child.txt"))
@@ -1946,6 +2020,30 @@ enum NativeTestSuite {
         check("取消递归复制不提交不完整目录", interrupted.cancelled && !fm.fileExists(atPath: target.appendingPathComponent("Folder").path))
         let remnants = try fm.contentsOfDirectory(atPath: target.path).filter { $0.hasPrefix(".WinFile-transfer-") }
         check("取消后清除自己的传输暂存目录", remnants.isEmpty)
+        let uuClipboard = root.appendingPathComponent("UURemoteClipboard", isDirectory: true)
+        let uuDestination = root.appendingPathComponent("UURemoteDestination", isDirectory: true)
+        try fm.createDirectory(at: uuClipboard, withIntermediateDirectories: true)
+        try fm.createDirectory(at: uuDestination, withIntermediateDirectories: true)
+        let uuMarker = uuClipboard.appendingPathComponent(".uuremote_test123")
+        try Data().write(to: uuMarker)
+        let uuItem = item(uuMarker)
+        let uuHandoff = FileTransferService.transfer([uuItem], to: uuDestination, mode: .copy,
+                                                     token: ScanCancellation(), uuClipboardDirectory: uuClipboard) { _ in }
+        check("UU 远程占位文件直接交给目标目录", fm.fileExists(atPath: uuDestination.appendingPathComponent(uuMarker.lastPathComponent).path) && uuHandoff.failures.isEmpty)
+        check("UU 远程交接不误报实际文件已完成", uuHandoff.completed.isEmpty && uuHandoff.delegatedRemoteTransfers == 1 && uuHandoff.summary.contains("UU"))
+        check("UU 远程交接不生成暂存目录", try fm.contentsOfDirectory(atPath: uuDestination.path).allSatisfy { !$0.hasPrefix(".WinFile-transfer-") })
+        let uuDuplicate = FileTransferService.transfer([uuItem], to: uuDestination, mode: .copy,
+                                                       token: ScanCancellation(), uuClipboardDirectory: uuClipboard) { _ in }
+        check("UU 占位文件冲突不会覆盖或改名", uuDuplicate.delegatedRemoteTransfers == 0 && uuDuplicate.failures.count == 1 && uuDuplicate.retryURLs == [uuMarker])
+        let uuMove = FileTransferService.transfer([uuItem], to: uuDestination, mode: .move,
+                                                  token: ScanCancellation(), uuClipboardDirectory: uuClipboard) { _ in }
+        check("UU 占位文件不允许移动粘贴", uuMove.failures.count == 1 && fm.fileExists(atPath: uuMarker.path))
+        let ordinaryMarker = source.appendingPathComponent(".uuremote_ordinary")
+        try Data().write(to: ordinaryMarker)
+        let ordinaryCopy = FileTransferService.transfer([item(ordinaryMarker)], to: uuDestination, mode: .copy,
+                                                        token: ScanCancellation(), uuClipboardDirectory: uuClipboard) { _ in }
+        check("其他目录的同名文件仍按普通文件复制", ordinaryCopy.completed.count == 1 && ordinaryCopy.delegatedRemoteTransfers == 0)
+        try fm.removeItem(at: ordinaryMarker)
         let missing = source.appendingPathComponent("missing.txt")
         try Data("gone".utf8).write(to: missing)
         let missingItem = item(missing)
@@ -2675,6 +2773,37 @@ enum NativeTestSuite {
     static func testOperations(_ sandbox: URL) throws {
         print("\n[文件操作]")
         let fm = FileManager.default
+
+        let deleteRoot = sandbox.appendingPathComponent("DeletionProgress")
+        try fm.createDirectory(at: deleteRoot, withIntermediateDirectories: true)
+        let deleteFiles = try (0..<4).map { index -> URL in
+            let url = deleteRoot.appendingPathComponent("\(index).txt")
+            try Data("test".utf8).write(to: url)
+            return url
+        }
+        let deleteToken = ScanCancellation()
+        var deleteUpdates: [FileDeletionProgress] = []
+        let deleteOutcome = FileDeletionService.delete(deleteFiles, token: deleteToken, remove: { url in
+            try fm.removeItem(at: url)
+            if url == deleteFiles[1] { deleteToken.cancel() }
+        }, onProgress: { deleteUpdates.append($0) })
+        check("停止批量删除保留未处理文件并记录已完成项", deleteOutcome.cancelled && deleteOutcome.completed == Array(deleteFiles.prefix(2)) && deleteFiles.suffix(2).allSatisfy { fm.fileExists(atPath: $0.path) })
+        check("批量删除进度按已处理项目统计", deleteUpdates.last?.processed == 2 && deleteUpdates.last?.total == 4)
+        let failedDelete = FileDeletionService.delete(Array(deleteFiles.suffix(2)), token: ScanCancellation(), remove: { url in
+            if url == deleteFiles[2] { throw CocoaError(.fileWriteNoPermission) }
+            try fm.removeItem(at: url)
+        })
+        check("批量删除失败不会误记成功或阻断其他文件", failedDelete.failures.count == 1 && failedDelete.completed == [deleteFiles[3]] && fm.fileExists(atPath: deleteFiles[2].path))
+        let modelFile = deleteRoot.appendingPathComponent("model-delete.txt")
+        try Data("fixture".utf8).write(to: modelFile)
+        let deletionModel = BrowserModel(engine: FSEngine(), startDirectory: deleteRoot)
+        waitFor { !deletionModel.isBusy }
+        deletionModel.selectedIDs = [FileItem.canonicalID(for: modelFile)]
+        deletionModel.deleteSelection(permanently: true)
+        check("删除操作在当前页签展示进度并阻止更新", deletionModel.deletionProgress?.total == 1 && AppUpdatePolicy.hasActiveFileOperations(in: [deletionModel]))
+        deletionModel.cancelDeletion()
+        waitFor { deletionModel.deletionProgress == nil }
+        check("立即停止删除后保留未处理文件", fm.fileExists(atPath: modelFile.path))
 
         let folder = try FSEngine.createFolder(in: sandbox, named: "新建文件夹")
         check("创建文件夹", fm.fileExists(atPath: folder.path))
@@ -4425,8 +4554,36 @@ enum NativeTestSuite {
         try "内容 C".write(to: sub.appendingPathComponent("中文名.txt"), atomically: true, encoding: .utf8)
 
         // 压缩
-        let archive = try ArchiveService.compress([source], to: output, name: "test")
+        var compressionUpdates: [Double?] = []
+        let archive = try ArchiveService.compress([source], to: output, name: "test") { compressionUpdates.append($0) }
         check("生成了压缩包", fm.fileExists(atPath: archive.path))
+        check("压缩报告开始和完成", !compressionUpdates.isEmpty && compressionUpdates.first! == nil && compressionUpdates.last! == 1)
+        let progressLog = base.appendingPathComponent("zip-progress.log")
+        try "  2/  2 [512K/512K]   adding: file.txt\n".write(to: progressLog, atomically: true, encoding: .utf8)
+        check("压缩条目计数解析为真实进度", ArchiveService.zipFileProgress(progressLog) == 0.5)
+        let cancelCompression = ScanCancellation(); cancelCompression.cancel()
+        do {
+            _ = try ArchiveService.compress([source], to: output, name: "cancelled", cancellation: cancelCompression)
+            check("取消压缩保留源文件且不生成结果", false)
+        } catch ArchiveError.cancelled {
+            check("取消压缩保留源文件且不生成结果", fm.fileExists(atPath: source.path) && !fm.fileExists(atPath: output.appendingPathComponent("cancelled.zip").path))
+        }
+        let cancelDuringCompression = ScanCancellation()
+        do {
+            _ = try ArchiveService.compress([source], to: output, name: "cancel-during", cancellation: cancelDuringCompression) { progress in
+                if progress == nil { cancelDuringCompression.cancel() }
+            }
+            check("压缩进行中停止并清除暂存", false)
+        } catch ArchiveError.cancelled {
+            let leftovers = (try? fm.contentsOfDirectory(atPath: output.path)) ?? []
+            check("压缩进行中停止并清除暂存", !leftovers.contains { $0.hasPrefix(".WinFile-compress-") } && !fm.fileExists(atPath: output.appendingPathComponent("cancel-during.zip").path))
+        }
+        do {
+            _ = try ArchiveService.compress([source], to: source, name: "recursive")
+            check("禁止将压缩包暂存到源文件夹内", false)
+        } catch {
+            check("禁止将压缩包暂存到源文件夹内", !fm.fileExists(atPath: source.appendingPathComponent("recursive.zip").path))
+        }
         check("扩展名是 zip", archive.pathExtension == "zip", archive.pathExtension)
         let size = (try? fm.attributesOfItem(atPath: archive.path)[.size] as? Int) ?? 0
         check("压缩包非空", size > 0, "\(size) 字节")
@@ -4445,8 +4602,10 @@ enum NativeTestSuite {
         // 解压到新目录并逐项比对（关键：内容必须完整）
         let restore = base.appendingPathComponent("还原")
         try fm.createDirectory(at: restore, withIntermediateDirectories: true)
-        let created = try ArchiveService.extract(archive, to: restore)
+        var extractionUpdates: [Double?] = []
+        let created = try ArchiveService.extract(archive, to: restore) { extractionUpdates.append($0) }
         check("解压返回了顶层项目", !created.isEmpty, "\(created.count) 项")
+        check("普通 ZIP 解压报告进度并完成", !extractionUpdates.isEmpty && extractionUpdates.last! == 1)
 
         let restoredRoot = restore.appendingPathComponent("源目录")
         check("解压后目录结构正确", fm.fileExists(atPath: restoredRoot.path))

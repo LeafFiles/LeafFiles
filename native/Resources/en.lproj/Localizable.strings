@@ -370,6 +370,15 @@
 "action.compress" = "Compress to zip";
 "action.extractHere" = "Extract Here";
 "archive.compressing" = "Compressing %@";
+"archive.byEntries" = "by item count";
+"archive.compressCancelled" = "Compression stopped.";
+"archive.error.destinationInsideSource" = "Choose a destination outside the source folder.";
+"delete.progress" = "Processed %d / %d items";
+"delete.stop" = "Stop Deleting";
+"delete.stopping" = "Stopping…";
+"delete.stopHint" = "Stops after the current item; deleted items are not automatically restored.";
+"delete.cancelled" = "Stopped: %d completed, %d failed.";
+"delete.finished" = "Deleted %d items; %d failed.";
 "archive.extracting" = "Extracting %@";
 "archive.defaultName" = "Archive";
 "archive.error.noSelection" = "Select items to compress first";
@@ -745,6 +754,9 @@
 "operation.cancelledSuffix" = " (cancelled)";
 
 "operation.sourceMissing" = "Source file is missing or unreadable: %@";
+"operation.pasteNoFiles" = "No files are available on the clipboard. For cross-device copies, make sure the files have transferred to this Mac.";
+"operation.uuRemotePending" = "Handed off to UU Remote; check its transfer status for the result";
+"operation.uuRemoteCopyOnly" = "Use Paste for UU Remote files; Paste and Move is not supported.";
 
 "scan.badgeScope" = "Count within the initial scan scope. Open the category to scan deeper.";
 
@@ -910,6 +922,15 @@
 "cleanup.changed" = "Changed, ignored or no longer eligible: %@";
 "cleanup.chooseFolder" = "Choose large-file folder…";
 "cleanup.cleaning" = "Checking and moving item %d…";
+"cleanup.cleaningTitle" = "Cleaning…";
+"cleanup.resultDetails" = "View details";
+"cleanup.dismissResult" = "Dismiss cleanup result";
+"cleanup.backToResults" = "Back to cleanup";
+"cleanup.cleaningProgress" = "Processed %d of %d items";
+"cleanup.cleaningDetail" = "Checking file status and moving items to the Trash.";
+"cleanup.stopping" = "Stopping…";
+"cleanup.stop" = "Stop cleanup";
+"cleanup.stopHint" = "Stops after the current item. Files already moved to the Trash are not restored automatically.";
 "cleanup.confirm" = "Move selected files to Trash?";
 "cleanup.confirmDetail" = "%d items (%@). Attachments, downloads, installers and large files may be valuable; review them first. File identity, running apps and open files will be checked again before each move.";
 "cleanup.defaultFolders" = "Restore default large-file folders";
@@ -929,6 +950,7 @@
 "cleanup.oldest" = "Oldest modified first";
 "cleanup.open" = "In use or open-file status unavailable; kept: %@";
 "cleanup.outcome" = "Moved %d items (%@) to Trash; %d skipped or failed.";
+"cleanup.failuresOmitted" = "%d additional skipped or failed items are not shown.";
 "cleanup.owner" = "App / source";
 "cleanup.partial" = "Scan limits or inaccessible folders: results are incomplete. Choose a single category in Scan settings to narrow the scope.";
 "cleanup.progress" = "Checked %d entries; found %d candidates";

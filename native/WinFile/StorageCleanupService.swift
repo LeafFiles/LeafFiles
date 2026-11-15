@@ -99,15 +99,18 @@ struct StorageCleanupScanResult {
             scannedBytes = max(0, scannedBytes - file.allocated)
             // A root bucket contains its direct files, while child buckets
             // contain their own subtrees. Charge only the most specific bucket.
-            var parent = file.url.standardizedFileURL.deletingLastPathComponent()
-            while true {
-                if let index = folderIndices[parent.path] {
+            var parent = (file.url.standardizedFileURL.path as NSString).deletingLastPathComponent
+            while !parent.isEmpty {
+                if let index = folderIndices[parent] {
                     folders[index].bytes = max(0, folders[index].bytes - file.allocated)
                     folders[index].files = max(0, folders[index].files - 1)
                     break
                 }
-                let ancestor = parent.deletingLastPathComponent()
-                guard ancestor != parent else { break }
+                // URL.deletingLastPathComponent() turns / into /.. instead of
+                // stopping, so an unbucketed file could loop forever at the root.
+                guard parent != "/" else { break }
+                let ancestor = (parent as NSString).deletingLastPathComponent
+                guard !ancestor.isEmpty, ancestor != parent else { break }
                 parent = ancestor
             }
         }
@@ -434,7 +437,11 @@ enum StorageCleanupService {
                 let size = ((try? fm.attributesOfItem(atPath: outputURL.path)[.size]) as? NSNumber)?.intValue ?? 0
                 let errorSize = ((try? fm.attributesOfItem(atPath: errorURL.path)[.size]) as? NSNumber)?.intValue ?? 0
                 if cancelled() || Date() >= deadline || size > 1024 * 1024 || errorSize > 1024 * 1024 {
-                    process.terminate(); kill(process.processIdentifier, SIGKILL); process.waitUntilExit(); return nil
+                    process.terminate(); kill(process.processIdentifier, SIGKILL)
+                    // A child stuck in kernel I/O may not exit immediately even
+                    // after SIGKILL. Reap it off-thread instead of hanging cleanup.
+                    DispatchQueue.global(qos: .utility).async { process.waitUntilExit() }
+                    return nil
                 }
                 Thread.sleep(forTimeInterval: 0.01)
             }
@@ -448,12 +455,45 @@ enum StorageCleanupService {
         } catch { return nil }
     }
     static func fileIsOpen(_ url: URL) -> Bool? {
-        guard let result = probe("/usr/sbin/lsof", ["-nP", "-t", "--", url.path], timeout: 2) else { return nil }
+        guard let result = probe("/usr/sbin/lsof", ["-nP", "-t", "--", url.path], timeout: 4) else { return nil }
         if result.status == 0 || !result.output.isEmpty { return true }
         return result.status == 1 && result.errors.isEmpty ? false : nil
     }
+
+    /// Check a small group immediately before processing it. lsof's NUL-delimited
+    /// fields preserve spaces and newlines in names; any ambiguous result fails closed.
+    static func openFileStates(_ urls: [URL], cancelled: () -> Bool = { false }) -> [String: Bool]? {
+        guard !urls.isEmpty else { return [:] }
+        let paths = Set(urls.map { $0.standardizedFileURL.path })
+        var names: [String: Set<String>] = [:]
+        for path in paths {
+            // lsof reports physical paths, e.g. /private/var for /var.
+            guard let resolved = realpath(path, nil) else { return nil }
+            let physicalPath = String(cString: resolved)
+            free(resolved)
+            names[path, default: []].insert(path)
+            names[physicalPath, default: []].insert(path)
+        }
+        guard let result = probe("/usr/sbin/lsof", ["-nP", "-F0n", "--"] + urls.map(\.path),
+                                 timeout: 5, cancelled: cancelled),
+              (result.status == 0 || result.status == 1), result.errors.isEmpty else { return nil }
+        var states = Dictionary(uniqueKeysWithValues: paths.map { ($0, false) })
+        for raw in result.output.split(separator: 0) {
+            guard let field = String(bytes: raw, encoding: .utf8) else { return nil }
+            let content = field.drop(while: { $0 == "\n" })
+            guard let kind = content.first else { continue }
+            if kind == "n" {
+                let name = String(content.dropFirst())
+                guard let matches = names[name] else { return nil }
+                for path in matches { states[path] = true }
+            }
+        }
+        if !result.output.isEmpty && !states.values.contains(true) { return nil }
+        if result.status == 0 && !states.values.contains(true) { return nil }
+        return states
+    }
     static func trash(_ files: [StorageCleanupFile], config: StorageCleanupConfiguration,
-                      running: () -> Set<String> = runningBundleIDs, isOpen: (URL) -> Bool? = fileIsOpen,
+                      running: () -> Set<String> = runningBundleIDs, isOpen: ((URL) -> Bool?)? = nil,
                       cancelled: () -> Bool = { false }, progress: (Int) -> Void = { _ in },
                       move: (URL) throws -> URL? = { url in
                           var destination: NSURL?
@@ -463,9 +503,23 @@ enum StorageCleanupService {
         var outcome = StorageCleanupOutcome()
         let allowed = rules(config)
         var seen = Set<String>()
+        var batchStates: [String: Bool]?
+        var batchEnd = 0
+        var batchCheckedAt = 0.0
+        var checksUnavailable = false
         for (index, file) in files.enumerated() where seen.insert(file.id).inserted {
             if cancelled() { outcome.cancelled = true; break }
-            progress(index + 1)
+            defer { if !cancelled() { progress(index + 1) } }
+            if isOpen == nil && !checksUnavailable && (index >= batchEnd || ProcessInfo.processInfo.systemUptime - batchCheckedAt > 0.5) {
+                batchEnd = min(files.count, index + 16)
+                batchStates = openFileStates(Array(files[index..<batchEnd]).map(\.url), cancelled: cancelled)
+                batchCheckedAt = ProcessInfo.processInfo.systemUptime
+            }
+            if cancelled() { outcome.cancelled = true; break }
+            if checksUnavailable && isOpen == nil {
+                outcome.failures.append(L("cleanup.open", "文件被占用或无法确认占用状态，已跳过：%@", file.url.path))
+                continue
+            }
             func unchanged() -> Bool {
                 guard allowed.contains(file.rule), physical(file.rule.root), physical(file.url),
                       let info = metadata(file.url), let parent = metadata(file.url.deletingLastPathComponent()),
@@ -474,14 +528,25 @@ enum StorageCleanupService {
                 return eligible(file.url, info: info, rule: file.rule, config: config, cancelled: cancelled)
             }
             guard unchanged() else { outcome.failures.append(L("cleanup.changed", "已变化、被忽略或不再符合规则：%@", file.url.path)); continue }
-            guard !isRunning(file.rule.bundleID, in: running()) else {
+            guard file.rule.bundleID == nil || !isRunning(file.rule.bundleID, in: running()) else {
                 outcome.failures.append(L("cleanup.running", "应用正在运行，已跳过：%@", file.rule.owner)); continue
             }
-            guard isOpen(file.url) == false else {
+            // An incomplete or failed batch is retried individually; an
+            // unconfirmed status always keeps the file.
+            let open: Bool?
+            if let isOpen { open = isOpen(file.url) }
+            else if checksUnavailable { open = nil }
+            else if let state = batchStates?[file.url.standardizedFileURL.path] { open = state }
+            else {
+                open = fileIsOpenCancellable(file.url, cancelled: cancelled)
+                if open == nil { checksUnavailable = true }
+            }
+            if cancelled() { outcome.cancelled = true; break }
+            guard open == false else {
                 outcome.failures.append(L("cleanup.open", "文件被占用或无法确认占用状态，已跳过：%@", file.url.path)); continue
             }
             if cancelled() { outcome.cancelled = true; break }
-            guard unchanged(), !isRunning(file.rule.bundleID, in: running()) else {
+            guard unchanged(), file.rule.bundleID == nil || !isRunning(file.rule.bundleID, in: running()) else {
                 outcome.failures.append(L("cleanup.changed", "已变化、被忽略或不再符合规则：%@", file.url.path)); continue
             }
             do {
@@ -491,5 +556,11 @@ enum StorageCleanupService {
             } catch { outcome.failures.append("\(file.url.path): \(error.localizedDescription)") }
         }
         return outcome
+    }
+
+    private static func fileIsOpenCancellable(_ url: URL, cancelled: () -> Bool) -> Bool? {
+        guard let result = probe("/usr/sbin/lsof", ["-nP", "-t", "--", url.path], timeout: 4, cancelled: cancelled) else { return nil }
+        if result.status == 0 || !result.output.isEmpty { return true }
+        return result.status == 1 && result.errors.isEmpty ? false : nil
     }
 }

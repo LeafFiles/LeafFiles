@@ -133,6 +133,9 @@ final class BrowserModel: ObservableObject {
     private let androidOpenHandler: (([URL], Bool) -> Void)?
     private let androidVideoHandler: ((AndroidEntry, Bool, ScanCancellation) async throws -> Void)?
     @Published private(set) var fileTransferProgress: FileTransferProgress?
+    @Published private(set) var deletionProgress: FileDeletionProgress?
+    private var deletionCancellation: ScanCancellation?
+    private var deletionID = UUID()
     @Published var lastTransferOutcome: FileTransferOutcome?
     private var fileTransferCancellation: ScanCancellation?
     private var fileTransferID = UUID()
@@ -159,9 +162,9 @@ final class BrowserModel: ObservableObject {
         return []
     }
 
-    var canPaste: Bool { !isCategoryView && !isBusy && archiveProgress == nil && fileTransferProgress == nil && transferProgress == nil && currentDirectory != nil && (clipboard != nil || (isAndroidPath && androidClipboard != nil)) }
+    var canPaste: Bool { !isCategoryView && !isBusy && archiveProgress == nil && fileTransferProgress == nil && transferProgress == nil && deletionProgress == nil && currentDirectory != nil && (clipboard != nil || (isAndroidPath && androidClipboard != nil)) }
     var canMutateFiles: Bool {
-        !isBusy && !FileOperationHistory.shared.isBusy && fileTransferProgress == nil && archiveProgress == nil && transferProgress == nil
+        !isBusy && !FileOperationHistory.shared.isBusy && fileTransferProgress == nil && archiveProgress == nil && transferProgress == nil && deletionProgress == nil
             && (!isWeChatAttachmentsView || (!weChatCleanup.isScanning && !weChatCleanup.isCleaning))
             && (activeStorageCleanup?.busy != true)
     }
@@ -269,6 +272,7 @@ final class BrowserModel: ObservableObject {
         searchCancellation?.cancel()
         categoryCancellation?.cancel()
         fileTransferCancellation?.cancel()
+        deletionCancellation?.cancel()
         pathTask?.cancel()
         directoryRefreshTask?.cancel()
         listingTask?.cancel()
@@ -724,7 +728,7 @@ final class BrowserModel: ObservableObject {
     @discardableResult
     func reclaimReadOnlyResults() -> Bool {
         guard !isSuspended, !isBusy, !isCleanupView, !isAndroidPath,
-              archiveProgress == nil, fileTransferProgress == nil, transferProgress == nil,
+              archiveProgress == nil, fileTransferProgress == nil, transferProgress == nil, deletionProgress == nil,
               !cleanupIsCleaning, showsFileList, currentDirectory?.isFileURL == true || isCategoryView,
               !items.isEmpty || !searchResults.isEmpty || !categoryResults.isEmpty else { return false }
         stopWatchingDirectory()
@@ -1026,9 +1030,8 @@ final class BrowserModel: ObservableObject {
             confirmed = alert.runModal() == .alertFirstButtonReturn
         }
         guard confirmed else { return }
-        runAndroidOperation(L("status.deleting", "正在删除…")) { service in
-            for entry in entries { try service.remove(entry.path) }
-        }
+        guard let (serial, _) = AndroidURL.split(currentDirectory ?? entries[0].url) else { return }
+        startDeletion(entries.map(\.url), androidSerial: serial, permanently: true)
     }
 
     /// 安卓端重命名
@@ -1098,23 +1101,37 @@ final class BrowserModel: ObservableObject {
         guard canCompress, let directory = requestedDirectory ?? archiveDestination() else { return }
         let urls = selectedItems.map(\.url)
         let name = ArchiveService.defaultArchiveName(for: urls)
+        let token = ScanCancellation()
+        archiveCancellation = token; archiveID = UUID()
+        let operationID = archiveID
         archiveProgress = ArchiveProgress(name: name, isCompressing: true)
         Task { [weak self] in
             var failure: String?
+            var cancelled = false
             do {
                 let target = try await Task.detached(priority: .userInitiated) {
-                    try ArchiveService.compress(urls, to: directory, name: name)
+                    try ArchiveService.compress(urls, to: directory, name: name, cancellation: token) { fraction in
+                        Task { @MainActor [weak self] in
+                            guard let self, self.archiveID == operationID, self.archiveProgress != nil, !token.isCancelled else { return }
+                            self.archiveProgress?.fraction = fraction
+                        }
+                    }
                 }.value
                 await MainActor.run { [weak self] in
-                    self?.statusMessage = L("status.compressed", "已压缩为 %@", target.lastPathComponent)
+                    guard let self, self.archiveID == operationID else { return }
+                    self.statusMessage = L("status.compressed", "已压缩为 %@", target.lastPathComponent)
                 }
+            } catch ArchiveError.cancelled {
+                cancelled = true
             } catch {
                 failure = error.localizedDescription
             }
             await MainActor.run { [weak self] in
-                guard let self else { return }
-                self.archiveProgress = nil
-                if let failure { self.errorMessage = failure } else { self.reload() }
+                guard let self, self.archiveID == operationID else { return }
+                self.archiveProgress = nil; self.archiveCancellation = nil
+                if let failure { self.errorMessage = failure }
+                else if cancelled { self.statusMessage = L("archive.compressCancelled", "已停止压缩。") }
+                else { self.reload() }
             }
         }
     }
@@ -1973,7 +1990,11 @@ final class BrowserModel: ObservableObject {
             pasteIntoAndroid()
             return
         }
-        guard let clipboard, let directory = currentDirectory else { return }
+        guard let directory = currentDirectory else { return }
+        guard let clipboard else {
+            statusMessage = L("operation.pasteNoFiles", "剪贴板中没有可用文件；跨设备复制时，请确认文件已传输到本机。")
+            return
+        }
         startFileTransfer(clipboard.urls, to: directory, mode: clipboard.mode == .copy ? .copy : .move,
                           clipboardGeneration: clipboardStore.changeCount)
     }
@@ -2062,8 +2083,7 @@ final class BrowserModel: ObservableObject {
                 self.clipboardStore.clear(ifGeneration: clipboardGeneration)
             }
             if self.navigationID == navigation {
-                self.statusMessage = L("operation.finished", "已完成 %d 项，失败 %d 项%@", outcome.completed.count,
-                    outcome.failures.count, outcome.cancelled ? L("operation.cancelledSuffix", "（已取消）") : "")
+                self.statusMessage = outcome.summary
                 self.reload()
             }
             NotificationCenter.default.post(name: .winFileFilesChanged, object: nil)
@@ -2087,32 +2107,64 @@ final class BrowserModel: ObservableObject {
             deleteAndroidSelection()
             return
         }
+        startDeletion(items.map(\.url), permanently: permanently)
+    }
+
+    private func startDeletion(_ urls: [URL], androidSerial: String? = nil, permanently: Bool) {
+        guard canMutateFiles, !urls.isEmpty else { return }
+        let token = ScanCancellation(), id = UUID(), navigation = navigationID
+        deletionCancellation = token; deletionID = id
+        lastTransferOutcome = nil
+        deletionProgress = FileDeletionProgress(total: urls.count)
+        statusMessage = L("status.deleting", "正在删除…")
         isBusy = true
         Task { [weak self] in
-            var failure: String?
-            do {
-                _ = try await Task.detached(priority: .userInitiated) {
-                    if permanently {
-                        for item in items { try FileManager.default.removeItem(at: item.url) }
+            let outcome = await Task.detached(priority: .userInitiated) { [weak self] in
+                let android = androidSerial.map { AndroidFileService(serial: $0) }
+                return FileDeletionService.delete(urls, token: token, remove: { url in
+                    if let android {
+                        guard let (serial, path) = AndroidURL.split(url), serial == androidSerial else { throw MTPError.noDevice }
+                        try android.remove(path)
+                    } else if permanently {
+                        try FileManager.default.removeItem(at: url)
                     } else {
-                        try FSEngine.moveToTrash(items)
+                        try FileManager.default.trashItem(at: url, resultingItemURL: nil)
                     }
-                }.value
-            } catch {
-                failure = error.localizedDescription
+                }, onProgress: { progress in
+                    Task { @MainActor [weak self] in
+                        guard let self, self.deletionID == id, !token.isCancelled else { return }
+                        self.deletionProgress = progress
+                    }
+                })
+            }.value
+            guard let self, self.deletionID == id else { return }
+            self.deletionID = UUID(); self.deletionProgress = nil; self.deletionCancellation = nil
+            self.selectedIDs.subtract(Set(outcome.completed.map { FileItem.canonicalID(for: $0) }))
+            if outcome.cancelled || !outcome.failures.isEmpty {
+                var summary = FileTransferOutcome()
+                summary.completed = outcome.completed; summary.failures = outcome.failures
+                summary.cancelled = outcome.cancelled; summary.isMoving = true
+                self.lastTransferOutcome = summary
             }
-            await MainActor.run { [weak self] in
-                guard let self else { return }
+            if self.navigationID == navigation {
                 self.isBusy = false
-                if let failure {
-                    self.errorMessage = failure
-                } else {
-                    self.statusMessage = String(format: WLocalizedString("status.deleted", comment: "已删除"), items.count)
-                    self.selectedIDs.removeAll()
+                self.statusMessage = outcome.cancelled
+                    ? L("delete.cancelled", "已停止：完成 %d 项，失败 %d 项。", outcome.completed.count, outcome.failures.count)
+                    : L("delete.finished", "已删除 %d 项，失败 %d 项。", outcome.completed.count, outcome.failures.count)
+                if !outcome.failures.isEmpty {
+                    self.errorMessage = outcome.failures.prefix(30).joined(separator: "\n")
+                        + (outcome.failures.count > 30 ? "\n" + L("cleanup.failuresOmitted", "另有 %d 项跳过或失败，未在此列出。", outcome.failures.count - 30) : "")
                 }
                 self.reload()
             }
+            NotificationCenter.default.post(name: .winFileFilesChanged, object: nil)
         }
+    }
+
+    func cancelDeletion() {
+        guard let deletionCancellation, !deletionCancellation.isCancelled else { return }
+        deletionCancellation.cancel()
+        deletionProgress?.isStopping = true
     }
 
     func duplicateSelection() {

@@ -26,7 +26,7 @@ final class FileClipboard: ObservableObject {
     var localPayload: ClipboardPayload? {
         if pasteboard.changeCount == observedChangeCount, let local { return local }
         // Files copied in Finder or another app are always copies; only our own generation can be a cut.
-        let urls = (pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
+        let urls = ExternalFileRequests.fileURLs(from: pasteboard)
         return urls.isEmpty ? nil : ClipboardPayload(mode: .copy, urls: urls)
     }
     var androidPayload: BrowserModel.AndroidClipboardPayload? {

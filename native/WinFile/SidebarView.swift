@@ -209,13 +209,6 @@ struct SidebarView: View {
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("sidebar.settings")
-            Divider().opacity(0.6)
-            Button { showAddFolder = true } label: {
-                Label(L("action.addFolder", "添加文件夹"), systemImage: "plus")
-            }.buttonStyle(.borderless)
-            Label(L("sidebar.dropHint", "拖入文件夹以添加到个人收藏"), systemImage: "folder.badge.plus")
-                .font(.caption2).foregroundStyle(isDropTargeted ? Color.accentColor : .secondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(10)
         .onDrop(of: [.fileURL], delegate: folderDropDelegate)

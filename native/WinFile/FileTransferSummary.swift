@@ -16,8 +16,7 @@ struct FileTransferSummary: View {
                 }.frame(maxHeight: 100)
             } label: {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(L("operation.finished", "已完成 %d 项，失败 %d 项%@", outcome.completed.count,
-                           outcome.failures.count, outcome.cancelled ? L("operation.cancelledSuffix", "（已取消）") : "")).font(.caption)
+                    Text(outcome.summary).font(.caption)
                     HStack {
                         if outcome.destination != nil { Button(L("operation.openResult", "打开结果目录"), action: openResult) }
                         if !outcome.retryURLs.isEmpty { Button(L("operation.retry", "重试未完成项（%d）", outcome.retryURLs.count), action: retry) }

@@ -96,7 +96,7 @@ struct TabContentHost: View {
                     EmptyStateView(engine: engine, model: model, openPanel: openFolderPanel)
                 }
             }
-            if model.isBusy {
+            if model.isBusy && model.deletionProgress == nil {
                 HStack {
                     ProgressView().controlSize(.small)
                     Text(model.statusMessage).font(.callout).lineLimit(2)
@@ -106,6 +106,25 @@ struct TabContentHost: View {
                 }
                     .padding(8)
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+            }
+            if let progress = model.deletionProgress {
+                VStack(spacing: 14) {
+                    ProgressView().controlSize(.large)
+                    Text(L("status.deleting", "正在删除…")).font(.headline)
+                    Text(L("delete.progress", "已处理 %d / %d 项", progress.processed, progress.total))
+                        .font(.callout).foregroundStyle(.secondary).monospacedDigit()
+                    ProgressView(value: Double(progress.processed), total: Double(max(1, progress.total)))
+                        .frame(width: 220)
+                    Button(progress.isStopping ? L("delete.stopping", "正在停止…") : L("delete.stop", "停止删除")) {
+                        model.cancelDeletion()
+                    }.disabled(progress.isStopping)
+                    Text(L("delete.stopHint", "当前项目处理完成后停止，已删除的项目不会自动恢复。"))
+                        .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                }
+                .padding(24)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color(nsColor: .textBackgroundColor))
+                .accessibilityIdentifier("delete.progress.overlay")
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

@@ -149,9 +149,13 @@ extension ArchiveService {
         let metadataCompatibleZip = zipMethods.allSatisfy { $0 == "Store" || $0 == "Deflate" }
         if archive.pathExtension.lowercased() == "zip", !hasZipVolumes, !listing.contains("Encrypted = +"), metadataCompatibleZip {
             // Preserve macOS resource forks and metadata for ordinary ZIP archives.
+            // Very large listings use an indeterminate bar to keep verbose
+            // progress logs bounded without failing an otherwise valid archive.
+            let reportsBytes = required > 0 && listing.utf8.count < 4 * 1024 * 1024
             _ = try execute(engine: URL(fileURLWithPath: "/usr/bin/ditto"),
-                            arguments: ["-x", "-k", archive.path, payload.path], password: nil,
-                            work: work, cancellation: cancellation)
+                            arguments: ["-x", "-k"] + (reportsBytes ? ["-V"] : []) + [archive.path, payload.path], password: nil,
+                            work: work, cancellation: cancellation, onProgress: reportsBytes ? onProgress : nil,
+                            progressBytesTotal: reportsBytes ? required : nil)
         } else {
             _ = try execute(engine: engine, arguments: ["x", "-y", "-aos", "-sccUTF-8", "-bso0", "-bsp1", "-bse1", "-o\(payload.path)", "--", archive.path],
                             password: password, work: work, cancellation: cancellation, onProgress: onProgress)
@@ -214,6 +218,7 @@ extension ArchiveService {
     /// Passwords go through stdin, never process arguments or saved preferences.
     static func execute(engine: URL, arguments: [String], password: String?, work: URL,
                         cancellation: ScanCancellation, onProgress: ((Double?) -> Void)? = nil,
+                        progressBytesTotal: Int64? = nil,
                         monitoredFile: URL? = nil, maximumFileBytes: Int64 = Int64.max) throws -> String {
         try checkCancellation(cancellation)
         let logURL = work.appendingPathComponent("engine-\(UUID().uuidString).log")
@@ -244,6 +249,10 @@ extension ArchiveService {
         var stoppingAt: Date?
         var lastProgress: Double?
         var limitError: ArchiveError?
+        let progressReader = progressBytesTotal == nil ? nil : try? FileHandle(forReadingFrom: logURL)
+        defer { try? progressReader?.close() }
+        var pendingProgress = Data()
+        var extractedBytes: Int64 = 0
         while process.isRunning {
             if (((try? FileManager.default.attributesOfItem(atPath: logURL.path)[.size]) as? NSNumber)?.int64Value ?? 0) > 32 * 1024 * 1024 {
                 limitError = .invalidListing
@@ -255,7 +264,20 @@ extension ArchiveService {
                 if stoppingAt == nil { process.terminate(); stoppingAt = Date() }
                 else if Date().timeIntervalSince(stoppingAt!) > 2 { kill(process.processIdentifier, SIGKILL) }
             }
-            if let onProgress, let data = try? tail(logURL, count: 2048),
+            if let onProgress, let total = progressBytesTotal, let progressReader {
+                pendingProgress.append(progressReader.readDataToEndOfFile())
+                while let newline = pendingProgress.firstIndex(of: 10) {
+                    let line = pendingProgress.prefix(upTo: newline)
+                    if let text = String(data: line, encoding: .utf8), let separator = text.range(of: " bytes for "),
+                       let bytes = Int64(text[..<separator.lowerBound]), bytes >= 0 {
+                        extractedBytes = extractedBytes > Int64.max - bytes ? Int64.max : extractedBytes + bytes
+                        let fraction = min(0.99, Double(extractedBytes) / Double(total))
+                        if fraction != lastProgress { lastProgress = fraction; onProgress(fraction) }
+                    }
+                    pendingProgress.removeSubrange(...newline)
+                }
+                if pendingProgress.count > 65536 { pendingProgress.removeAll() }
+            } else if let onProgress, let data = try? tail(logURL, count: 2048),
                let output = String(data: data, encoding: .utf8) {
                 let regex = try! NSRegularExpression(pattern: #"([0-9]{1,3})%"#)
                 let matches = regex.matches(in: output, range: NSRange(output.startIndex..., in: output))

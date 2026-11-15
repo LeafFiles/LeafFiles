@@ -9,6 +9,7 @@
 //   - 解压使用内置 7-Zip；普通 ZIP 使用 ditto 还原 macOS 元数据。
 //   - 私有暂存、子进程写入隔离、路径检查与取消由 ArchiveExtraction 实现。
 import Foundation
+import Darwin
 
 enum ArchiveError: LocalizedError {
     case unsupported, engineMissing, passwordRequired, wrongPassword, cancelled, unsafePath, insufficientSpace
@@ -93,17 +94,33 @@ enum ArchiveService {
     ///   - name: 压缩包文件名（不含扩展名）
     /// - Returns: 生成的压缩包 URL
     @discardableResult
-    static func compress(_ urls: [URL], to destination: URL, name: String) throws -> URL {
+    static func compress(_ urls: [URL], to destination: URL, name: String,
+                         cancellation: ScanCancellation = ScanCancellation(),
+                         onProgress: @escaping (Double?) -> Void = { _ in }) throws -> URL {
+        try checkCancellation(cancellation)
         guard !urls.isEmpty else { throw ArchiveError.noSelection }
         let sources = urls.filter { !isMacMetadataName($0.lastPathComponent) }
         guard !sources.isEmpty else { throw ArchiveError.noCompressibleFiles }
 
-        let target = uniqueArchiveURL(in: destination, baseName: name)
         let fm = FileManager.default
+        let destinationPath = destination.standardizedFileURL.resolvingSymlinksInPath().path
+        for source in sources {
+            let values = try? source.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            let sourcePath = source.standardizedFileURL.resolvingSymlinksInPath().path
+            if values?.isDirectory == true && values?.isSymbolicLink != true &&
+                (destinationPath == sourcePath || destinationPath.hasPrefix(sourcePath + "/")) {
+                throw ArchiveError.commandFailed(L("archive.error.destinationInsideSource", "请选择压缩源文件夹之外的保存位置。"), -1)
+            }
+        }
+        let outputStage = destination.appendingPathComponent(".WinFile-compress-\(UUID().uuidString)")
+        try fm.createDirectory(at: outputStage, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        defer { try? fm.removeItem(at: outputStage) }
+        let stagedArchive = outputStage.appendingPathComponent("archive.zip")
+        onProgress(nil)
 
         // 全部项目应位于同一父目录，才能用相对名一次打包
         let parents = Set(sources.map { $0.deletingLastPathComponent().standardizedFileURL.path })
-        guard parents.count == 1, let workingDirectory = sources.first?.deletingLastPathComponent() else {
+        if parents.count != 1 {
             // 来自不同目录：先汇集到临时目录再打包
             let staging = fm.temporaryDirectory
                 .appendingPathComponent("winfile-archive-\(UUID().uuidString)")
@@ -113,6 +130,7 @@ enum ArchiveService {
             var names: [String] = []
             var seen = Set<String>()
             for url in sources where seen.insert(FileItem.canonicalID(for: url)).inserted {
+                try checkCancellation(cancellation)
                 let parent = url.deletingLastPathComponent()
                 let key = parent.standardizedFileURL.resolvingSymlinksInPath().path
                 let group: URL
@@ -125,11 +143,15 @@ enum ArchiveService {
                 }
                 try fm.copyItem(at: url, to: group.appendingPathComponent(url.lastPathComponent))
             }
-            try runZip(at: staging, names: names, target: target)
-            return target
+            try runZip(at: staging, names: names, target: stagedArchive, cancellation: cancellation, onProgress: onProgress)
+        } else {
+            try runZip(at: sources[0].deletingLastPathComponent(), names: sources.map(\.lastPathComponent), target: stagedArchive,
+                       cancellation: cancellation, onProgress: onProgress)
         }
-
-        try runZip(at: workingDirectory, names: sources.map(\.lastPathComponent), target: target)
+        try checkCancellation(cancellation)
+        let target = uniqueArchiveURL(in: destination, baseName: name)
+        try fm.moveItem(at: stagedArchive, to: target)
+        onProgress(1)
         return target
     }
 
@@ -138,29 +160,56 @@ enum ArchiveService {
     }
 
     /// 以 base 为工作目录执行 zip
-    private static func runZip(at base: URL, names: [String], target: URL) throws {
+    private static func runZip(at base: URL, names: [String], target: URL,
+                               cancellation: ScanCancellation, onProgress: (Double?) -> Void) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
         // Exclude only macOS metadata at every depth; retain other hidden files and symlinks.
         // End the exclude list before literal input names, including names starting with a dash.
         let excluded = [".DS_Store", "*/.DS_Store", "._*", "*/._*",
                         "__MACOSX", "__MACOSX/*", "*/__MACOSX", "*/__MACOSX/*"]
-        process.arguments = ["-r", "-y", "-q", target.path, "-x"] + excluded + ["--"] + names
+        process.arguments = ["-r", "-y", "-db", "-dc", target.path, "-x"] + excluded + ["--"] + names
         process.currentDirectoryURL = base
-
-        let errPipe = Pipe()
-        process.standardError = errPipe
-        process.standardOutput = Pipe()
-
+        let logURL = target.deletingLastPathComponent().appendingPathComponent("zip.log")
+        FileManager.default.createFile(atPath: logURL.path, contents: nil, attributes: [.posixPermissions: 0o600])
+        let log = try FileHandle(forWritingTo: logURL)
+        defer { try? log.close() }
+        process.standardError = log
+        process.standardOutput = log
         try process.run()
-        _ = errPipe.fileHandleForReading.readDataToEndOfFile()
+        var stoppingAt: Date?
+        var lastFraction: Double?
+        while process.isRunning {
+            if cancellation.isCancelled {
+                if stoppingAt == nil { process.terminate(); stoppingAt = Date() }
+                else if Date().timeIntervalSince(stoppingAt!) > 2 { kill(process.processIdentifier, SIGKILL) }
+            }
+            if let fraction = zipFileProgress(logURL), fraction != lastFraction {
+                lastFraction = fraction; onProgress(fraction)
+            }
+            Thread.sleep(forTimeInterval: 0.08)
+        }
         process.waitUntilExit()
-
+        try checkCancellation(cancellation)
         guard process.terminationStatus == 0 else {
             throw ArchiveError.commandFailed(
                 L("archive.error.zipFailed", "打包失败（退出码 %d）", Int(process.terminationStatus)),
                 process.terminationStatus)
         }
+    }
+
+    /// zip's -dc counters measure entries, not compressed bytes.
+    static func zipFileProgress(_ logURL: URL) -> Double? {
+        guard let handle = try? FileHandle(forReadingFrom: logURL) else { return nil }
+        defer { try? handle.close() }
+        guard let size = try? handle.seekToEnd() else { return nil }
+        try? handle.seek(toOffset: size > 8192 ? size - 8192 : 0)
+        guard let text = String(data: handle.readData(ofLength: 8192), encoding: .utf8),
+              let regex = try? NSRegularExpression(pattern: #"(?m)^\s*([0-9]+)\s*/\s*([0-9]+)\s*\["#),
+              let match = regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).last,
+              let doneRange = Range(match.range(at: 1), in: text), let remainingRange = Range(match.range(at: 2), in: text),
+              let done = Double(text[doneRange]), let remaining = Double(text[remainingRange]), done + remaining > 1 else { return nil }
+        return min(0.99, max(0, done / (done + remaining)))
     }
 
     /// 「名称 解压」「名称 解压 2」…

@@ -7,16 +7,28 @@ struct CleanupHubView: View {
     @Binding var dialog: DialogKind?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 16) { heading; Spacer(minLength: 12); sectionPicker }
-                VStack(alignment: .leading, spacing: 10) { heading; sectionPicker }
-            }.padding(.horizontal, 16).padding(.vertical, 10)
-            Divider().opacity(0.6)
-            if model.cleanupSection == .software {
-                SoftwareCleanupView(model: model, dialog: $dialog)
-            } else {
-                StorageCleanupView(store: model.storageCleanup, model: model, nestedInHub: true)
+        ZStack {
+            VStack(alignment: .leading, spacing: 0) {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 16) { heading; Spacer(minLength: 12); sectionPicker }
+                    VStack(alignment: .leading, spacing: 10) { heading; sectionPicker }
+                }.padding(.horizontal, 16).padding(.vertical, 10)
+                Divider().opacity(0.6)
+                if model.cleanupSection == .software {
+                    SoftwareCleanupView(model: model, dialog: $dialog)
+                } else {
+                    StorageCleanupView(store: model.storageCleanup, model: model, nestedInHub: true)
+                }
+            }.disabled(model.isCleaningStorage)
+            if model.isStorageCleanupView && model.storageCleanup.isCleaning {
+                CleanupProgressOverlay(completed: model.storageCleanup.cleaningIndex, total: model.storageCleanup.cleaningTotal,
+                                       isStopping: model.storageCleanup.isStoppingCleanup, stop: model.storageCleanup.cancel)
+            } else if model.isWeChatCleanupView && model.weChatCleanup.isCleaning {
+                CleanupProgressOverlay(completed: model.weChatCleanup.cleaningCompleted, total: model.weChatCleanup.cleaningTotal,
+                                       isStopping: model.weChatCleanup.isStoppingCleanup, stop: model.weChatCleanup.cancelCleaning)
+            } else if model.isWeChatCleanupView && model.softwareCleanup.isCleaning {
+                CleanupProgressOverlay(completed: model.softwareCleanup.cleaningIndex, total: model.softwareCleanup.cleaningTotal,
+                                       isStopping: model.softwareCleanup.isStoppingCleanup, stop: model.softwareCleanup.cancel)
             }
         }.background(InterfaceStyle.canvas)
     }
@@ -37,6 +49,63 @@ struct CleanupHubView: View {
         }.pickerStyle(.segmented).labelsHidden().frame(width: 260).disabled(model.isCleaningStorage)
     }
 
+}
+
+/// Covers only the active cleanup page; other tabs and the window remain usable.
+struct CleanupProgressOverlay: View {
+    let completed: Int
+    let total: Int
+    let isStopping: Bool
+    let stop: () -> Void
+
+    var body: some View {
+        VStack(spacing: 14) {
+            ProgressView().controlSize(.large)
+            Text(L("cleanup.cleaningTitle", "正在清理…")).font(.headline)
+            Text(L("cleanup.cleaningProgress", "已处理 %d / %d 项", completed, total))
+                .font(.callout).foregroundStyle(.secondary).monospacedDigit()
+            ProgressView(value: Double(min(completed, total)), total: Double(max(1, total)))
+                .frame(maxWidth: 260)
+            Text(L("cleanup.cleaningDetail", "正在检查文件状态并移到废纸篓。"))
+                .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            Button(isStopping ? L("cleanup.stopping", "正在停止…") : L("cleanup.stop", "停止清理"), action: stop)
+                .disabled(isStopping)
+            Text(L("cleanup.stopHint", "当前项目处理完成后停止，已移到废纸篓的文件不会自动恢复。"))
+                .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+        }
+        .padding(24).frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .textBackgroundColor))
+        .accessibilityIdentifier("cleanup.progress.overlay")
+    }
+}
+
+/// Keep the outcome visible without interrupting navigation or hiding failures.
+struct CleanupMessageBanner: View {
+    let message: String
+    let showsDetails: Bool
+    let showDetails: () -> Void
+    let dismiss: () -> Void
+
+    private var summary: String { message.split(separator: "\n", omittingEmptySubsequences: true).first.map(String.init) ?? message }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 9) {
+            Image(systemName: "info.circle").foregroundStyle(Color.accentColor)
+            Text(summary).font(.callout).frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+            if !showsDetails {
+                Button(L("cleanup.resultDetails", "查看详情"), action: showDetails)
+                    .buttonStyle(.plain).foregroundStyle(Color.accentColor)
+            }
+            Button(action: dismiss) { Image(systemName: "xmark") }
+                .buttonStyle(.plain).foregroundStyle(.secondary)
+                .help(L("button.close", "关闭"))
+                .accessibilityLabel(L("cleanup.dismissResult", "关闭清理结果"))
+        }
+        .padding(.horizontal, 12).padding(.vertical, 10)
+        .background(Color.accentColor.opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
+        .accessibilityIdentifier("cleanup.result.banner")
+    }
 }
 
 struct SoftwareCleanupView: View {
@@ -101,18 +170,36 @@ struct WeChatCleanupView: View {
             let compact = geometry.size.height < 560
             VStack(alignment: .leading, spacing: compact ? 6 : 12) {
                 header
-                if store.result.isPartial {
-                    HStack {
-                        Text(L("wechat.partialScan", "当前仅显示部分扫描结果，占用统计并非全部文件；可提高上限重新扫描。"))
-                            .font(.caption).foregroundStyle(.secondary)
-                        Spacer()
-                        Button(L("wechat.expandScan", "提高上限重新扫描")) { store.expandScan() }
-                            .disabled(!store.canExpandScan)
-                    }
+                if let message = store.message {
+                    CleanupMessageBanner(message: message, showsDetails: showScanDetails,
+                                         showDetails: { showScanDetails = true }, dismiss: { store.message = nil })
                 }
-                filters
-                files.frame(minHeight: 100).modifier(InsetSurface())
-                footer
+                if showScanDetails {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 12) {
+                            Button { showScanDetails = false } label: {
+                                Label(L("cleanup.backToResults", "返回清理"), systemImage: "chevron.left")
+                            }.buttonStyle(.plain).foregroundStyle(Color.accentColor)
+                            Text(L("wechat.scanDetails", "扫描详情与占用分布")).font(.headline)
+                            Spacer()
+                        }
+                        Divider()
+                        ScrollView { scanDetails.padding(.vertical, 4) }
+                    }.padding(16).frame(maxHeight: .infinity).modifier(InsetSurface())
+                } else {
+                    if store.result.isPartial {
+                        HStack {
+                            Text(L("wechat.partialScan", "当前仅显示部分扫描结果，占用统计并非全部文件；可提高上限重新扫描。"))
+                                .font(.caption).foregroundStyle(.secondary)
+                            Spacer()
+                            Button(L("wechat.expandScan", "提高上限重新扫描")) { store.expandScan() }
+                                .disabled(!store.canExpandScan)
+                        }
+                    }
+                    filters
+                    files.frame(minHeight: 100).modifier(InsetSurface())
+                    footer
+                }
             }
             .controlSize(compact ? .small : .regular)
             .padding(compact ? 10 : 16)
@@ -123,7 +210,6 @@ struct WeChatCleanupView: View {
         .sheet(isPresented: $showFolderPicker) {
             FolderPickerSheet(title: L("wechat.choose", "选择微信文件夹…"), onSelect: store.addFolder)
         }
-        .onChange(of: store.message) { if $0 != nil { showScanDetails = true } }
         .alert(L("wechat.confirmTitle", "将所选附件移到废纸篓？"), isPresented: $store.confirmsTrash) {
             Button(L("action.moveToTrash", "移到废纸篓"), role: .destructive) { store.clean(store.pendingTrashFiles) }
             Button(L("button.cancel", "取消"), role: .cancel) {}
@@ -151,7 +237,7 @@ struct WeChatCleanupView: View {
             usageAnalysis
             if store.isScanning { Text(store.scanProgress.currentPath).font(.caption).textSelection(.enabled) }
             if !store.result.inaccessible.isEmpty { accessHint }
-            if let message = store.message { Text(message).font(.caption).textSelection(.enabled) }
+            if let message = store.message, message.contains("\n") { Text(message).font(.caption).textSelection(.enabled) }
             if !model.statusMessage.isEmpty { Text(model.statusMessage).font(.caption).foregroundStyle(.secondary) }
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -205,12 +291,6 @@ struct WeChatCleanupView: View {
             Button { showScanDetails.toggle() } label: { Image(systemName: "ellipsis.circle") }
                 .help(L("wechat.scanDetails", "扫描详情与占用分布"))
                 .accessibilityLabel(L("wechat.scanDetails", "扫描详情与占用分布"))
-                .popover(isPresented: $showScanDetails) {
-                    VStack(alignment: .leading, spacing: 12) {
-                        ScrollView { scanDetails }.frame(maxHeight: 500)
-                        HStack { Spacer(); Button(L("button.done", "完成")) { showScanDetails = false } }
-                    }.padding(16).frame(width: 540)
-                }
             if operationInProgress { ProgressView().controlSize(.small) }
             if store.isScanning { Button(L("button.cancel", "取消")) { store.cancelScan() } }
             else {

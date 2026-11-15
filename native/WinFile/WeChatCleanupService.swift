@@ -68,6 +68,7 @@ struct WeChatScanResult {
 struct WeChatTrashResult {
     var removed: Set<String> = []
     var failures: [String] = []
+    var cancelled = false
 }
 
 enum WeChatCleanupService {
@@ -254,11 +255,14 @@ enum WeChatCleanupService {
         return true
     }
 
-    static func trash(_ files: [WeChatFile], moveToTrash: (URL) throws -> Void = {
+    static func trash(_ files: [WeChatFile], cancelled: () -> Bool = { false },
+                      progress: (Int) -> Void = { _ in }, moveToTrash: (URL) throws -> Void = {
         try FileManager.default.trashItem(at: $0, resultingItemURL: nil)
     }) -> WeChatTrashResult {
         var result = WeChatTrashResult()
-        for file in files {
+        for (index, file) in files.enumerated() {
+            if cancelled() { result.cancelled = true; break }
+            defer { progress(index + 1) }
             guard isUnchanged(file) else {
                 result.failures.append(L("wechat.changed", "文件已变化或不可访问，已跳过：%@", file.url.path))
                 continue

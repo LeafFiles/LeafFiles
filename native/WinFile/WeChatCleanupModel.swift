@@ -35,6 +35,9 @@ final class WeChatCleanupModel: ObservableObject {
     @Published private(set) var result = WeChatScanResult() { didSet { apply() } }
     @Published private(set) var isScanning = false
     @Published private(set) var isCleaning = false
+    @Published private(set) var cleaningCompleted = 0
+    @Published private(set) var cleaningTotal = 0
+    @Published private(set) var isStoppingCleanup = false
     @Published private(set) var hasScanned = false
     @Published var search = "" { didSet { filtersChanged() } }
     @Published var kind = "all" { didSet { filtersChanged() } }
@@ -77,6 +80,7 @@ final class WeChatCleanupModel: ObservableObject {
     private let homeDirectory: URL
     @Published private(set) var customRoots: [URL]
     private var scanTask: Task<WeChatScanResult, Never>?
+    private var cleaningTask: Task<Void, Never>?
     private var scanID = UUID()
     private static let rootsKey = WeChatCleanupService.customRootsPreferenceKey
     @Published private(set) var lastScanDate: Date?
@@ -100,7 +104,7 @@ final class WeChatCleanupModel: ObservableObject {
         apply()
     }
 
-    deinit { scanTask?.cancel() }
+    deinit { scanTask?.cancel(); cleaningTask?.cancel() }
 
     /// 切换排序：计算完成后一次性提交，只发布一次
     func setSort(field: String, ascending: Bool) {
@@ -386,17 +390,34 @@ final class WeChatCleanupModel: ObservableObject {
     func clean(_ confirmedFiles: [WeChatFile]) {
         guard !isCleaning, !isScanning, !confirmedFiles.isEmpty else { return }
         isCleaning = true
-        message = nil
-        Task { [weak self] in
-            let outcome = await Task.detached(priority: .userInitiated) {
-                WeChatCleanupService.trash(confirmedFiles)
-            }.value
+        message = nil; cleaningCompleted = 0; cleaningTotal = confirmedFiles.count; isStoppingCleanup = false
+        cleaningTask = Task { [weak self] in
+            let worker = Task.detached(priority: .userInitiated) { [weak self] in
+                var lastProgress = 0.0
+                return WeChatCleanupService.trash(confirmedFiles, cancelled: { Task.isCancelled }, progress: { index in
+                    let now = ProcessInfo.processInfo.systemUptime
+                    guard index == confirmedFiles.count || now - lastProgress >= 0.2 else { return }
+                    lastProgress = now
+                    Task { @MainActor [weak self] in
+                        guard let self, self.isCleaning else { return }
+                        self.cleaningCompleted = index
+                    }
+                })
+            }
+            let outcome = await withTaskCancellationHandler(operation: { await worker.value }, onCancel: { worker.cancel() })
             guard let self else { return }
             self.result.files.removeAll { outcome.removed.contains($0.id) }
             self.selection.subtract(outcome.removed)
-            self.isCleaning = false
+            self.isCleaning = false; self.isStoppingCleanup = false; self.cleaningTask = nil
             self.message = L("wechat.cleaned", "已移到废纸篓 %d 项；跳过或失败 %d 项。", outcome.removed.count, outcome.failures.count)
+                + (outcome.cancelled ? "\n" + L("cleanup.cancelled", "已取消，结果不完整。") : "")
                 + (outcome.failures.isEmpty ? "" : "\n" + outcome.failures.joined(separator: "\n"))
         }
+    }
+
+    func cancelCleaning() {
+        guard isCleaning, !isStoppingCleanup else { return }
+        isStoppingCleanup = true
+        cleaningTask?.cancel()
     }
 }
