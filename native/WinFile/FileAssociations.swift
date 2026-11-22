@@ -8,6 +8,13 @@ import AppKit
 import Combine
 import Foundation
 
+struct OpenWithRequest: Identifiable {
+    let id = UUID()
+    let item: FileItem
+    let needsApplication: Bool
+    let rememberInitially: Bool
+}
+
 @MainActor
 final class FileAssociations: ObservableObject {
 
@@ -17,9 +24,11 @@ final class FileAssociations: ObservableObject {
     @Published private(set) var map: [String: String]
 
     private let key = "WinFileDefaultApplications"
+    private let defaults: UserDefaults
 
-    private init() {
-        map = UserDefaults.standard.dictionary(forKey: key) as? [String: String] ?? [:]
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        map = defaults.dictionary(forKey: key) as? [String: String] ?? [:]
     }
 
     /// 统一用小写扩展名作键；无扩展名返回 nil
@@ -76,7 +85,7 @@ final class FileAssociations: ObservableObject {
     }
 
     private func persist() {
-        UserDefaults.standard.set(map, forKey: key)
+        defaults.set(map, forKey: key)
         // 关联变化后：清空解析缓存，并通知观察者刷新徽标。
         // invalidate() 会触发 DefaultAppService 的 objectWillChange，
         // 所有正在显示的文件图标因此立即更新（无需切换目录）。

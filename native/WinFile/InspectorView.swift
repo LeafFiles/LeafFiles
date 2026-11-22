@@ -1,5 +1,6 @@
 // 详细信息窗格：预览、属性、文件夹统计
 import SwiftUI
+import Quartz
 
 struct InspectorView: View {
     @ObservedObject private var localization = Localization.shared
@@ -9,41 +10,56 @@ struct InspectorView: View {
     @State private var computingSize = false
     @State private var sizeIsComplete = true
     @State private var sizeLimit = 200_000
+    @AppStorage("InspectorShowsContentPreview") private var showsContentPreview = true
 
     private var items: [FileItem] { model.selectedItems }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Label(header, systemImage: "info.circle")
+        let selected = items
+        return VStack(alignment: .leading, spacing: 0) {
+            Label(header(count: selected.count), systemImage: "info.circle")
                 .font(.headline)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    if items.count == 1, let item = items.first {
+                    if selected.count == 1, let item = selected.first {
                         single(item)
-                    } else if items.count > 1 {
-                        multiple(items)
+                    } else if selected.count > 1 {
+                        multiple(selected)
                     } else {
                         currentFolder
                     }
                 }
                 .padding(14)
             }
-            if !items.isEmpty { pinnedActions }
+            if !selected.isEmpty { pinnedActions(selected) }
         }
         .background(InterfaceStyle.canvas)
     }
 
-    private var header: String {
-        if items.count == 1 { return L("inspector.details", "详细信息") }
-        if items.count > 1 { return String(format: WLocalizedString("inspector.multiSelect", comment: "已选择项目"), items.count) }
+    private func header(count: Int) -> String {
+        if count == 1 { return L("inspector.details", "详细信息") }
+        if count > 1 { return String(format: WLocalizedString("inspector.multiSelect", comment: "已选择项目"), count) }
         return WLocalizedString("inspector.currentFolder", comment: "当前文件夹")
     }
 
     @ViewBuilder
     private func single(_ item: FileItem) -> some View {
+        if item.url.isFileURL && !item.isDirectory && !item.isBundle {
+            DisclosureGroup(L("inspector.contentPreview", "内容预览"), isExpanded: $showsContentPreview) {
+                InspectorQuickLook(url: item.url)
+                    .id(item.id + "-\(item.modified?.timeIntervalSince1970 ?? 0)")
+                    .frame(height: 260)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .padding(.top, 6)
+            }
+            .font(.caption)
+        }
+        if item.url.isFileURL && item.isDirectory && !item.isBundle {
+            InspectorFolderContents(root: item.url).id(item.id)
+        }
         VStack(spacing: 8) {
             FileIconView(item: item,
                          size: item.supportsThumbnail && !AndroidURL.isAndroid(item.url) ? 144 : 64)
@@ -97,7 +113,7 @@ struct InspectorView: View {
         .font(.callout)
     }
 
-    private var pinnedActions: some View {
+    private func pinnedActions(_ items: [FileItem]) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Divider().opacity(0.6)
             HStack {
@@ -232,4 +248,78 @@ struct InspectorView: View {
         sizeIsComplete = result.isComplete
         computingSize = false
     }
+}
+
+private struct InspectorFolderContents: View {
+    let root: URL
+    @State private var directory: URL
+    @State private var children: [URL] = []
+    @State private var selectedFile: URL?
+    @State private var error: String?
+    @State private var truncated = false
+    @State private var expanded = false
+
+    init(root: URL) {
+        self.root = root.standardizedFileURL
+        _directory = State(initialValue: root.standardizedFileURL)
+    }
+
+    var body: some View {
+        DisclosureGroup(L("inspector.folderContents", "文件夹内容"), isExpanded: $expanded) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Button { directory = directory.deletingLastPathComponent(); selectedFile = nil } label: {
+                        Image(systemName: "arrow.up")
+                    }.disabled(directory == root)
+                    Text(directory.lastPathComponent).lineLimit(1).truncationMode(.middle)
+                }
+                if let error { Text(error).foregroundStyle(.secondary) }
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        ForEach(children, id: \.self) { url in
+                            Button {
+                                let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey, .isSymbolicLinkKey])
+                                if values?.isDirectory == true && values?.isPackage != true && values?.isSymbolicLink != true {
+                                    directory = url; selectedFile = nil
+                                } else { selectedFile = url }
+                            } label: {
+                                Text(url.lastPathComponent).lineLimit(1).truncationMode(.middle)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }.buttonStyle(.plain)
+                        }
+                    }
+                }.frame(maxHeight: 160)
+                if truncated { Text(L("inspector.folderLimited", "仅显示前 200 项")).foregroundStyle(.secondary) }
+                if let selectedFile {
+                    InspectorQuickLook(url: selectedFile).id(selectedFile).frame(height: 180)
+                }
+            }.padding(.top, 6)
+        }
+        .font(.caption)
+        .task(id: "\(expanded)-\(directory.path)") {
+            guard expanded else { children = []; selectedFile = nil; return }
+            let url = directory
+            let result: Result<[URL], Error> = await Task.detached(priority: .utility) {
+                Result { try FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) }
+            }.value
+            guard !Task.isCancelled else { return }
+            switch result {
+            case .success(let urls):
+                let sorted = urls.sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+                children = Array(sorted.prefix(200)); truncated = sorted.count > 200; error = nil
+            case .failure(let failure): children = []; truncated = false; error = failure.localizedDescription
+            }
+        }
+    }
+}
+
+private struct InspectorQuickLook: NSViewRepresentable {
+    let url: URL
+    func makeNSView(context: Context) -> QLPreviewView {
+        let view = QLPreviewView(frame: .zero, style: .normal)!
+        view.previewItem = url as NSURL
+        return view
+    }
+    func updateNSView(_ view: QLPreviewView, context: Context) { view.previewItem = url as NSURL }
+    static func dismantleNSView(_ view: QLPreviewView, coordinator: ()) { view.previewItem = nil; view.close() }
 }

@@ -154,6 +154,11 @@ final class NativeFileTileView: NSView {
         self.hovering = hovering
         updateColors()
     }
+    func setMarqueeSelected(_ selected: Bool) {
+        guard self.selected != selected else { return }
+        self.selected = selected
+        updateColors()
+    }
     override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); updateColors() }
     private func updateColors() {
         CATransaction.begin()

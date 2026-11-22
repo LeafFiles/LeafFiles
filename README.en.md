@@ -9,7 +9,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/macOS-13.0%2B-black.svg)](#installation)
 [![Swift](https://img.shields.io/badge/Swift-5-orange.svg)](#tech-stack)
-[![Tests](https://img.shields.io/badge/tests-1448%20passing-brightgreen.svg)](#testing)
+[![Tests](https://img.shields.io/badge/tests-1510%20passing-brightgreen.svg)](#testing)
 [![Release](https://img.shields.io/github/v/release/LeafFiles/LeafFiles)](../../releases/latest)
 
 LeafFiles brings everyday file browsing and organization into one window. Switch between folders in tabs, find files with the path bar and categories, review storage usage, organize app attachments and manage Android files. Supports Simplified Chinese, English and macOS dark mode.
@@ -46,7 +46,16 @@ LeafFiles brings these tasks together in a native macOS interface, with file sca
 
 As of October 26, 2026, the recent fixes have passed regression checks, with no obvious issues found in local use. LeafFiles will stay focused on browsing, organizing and managing files. Future work will prioritize interface improvements, performance and bug fixes; unrelated features are outside the project’s scope. Please report any issues on [GitHub](https://github.com/LeafFiles/LeafFiles/issues).
 
-## What’s new in v2.5.2
+## What’s new in v2.6.0
+
+- Drag to select files in list and icon views. The first row stays visible when dragging toward the header, and Delete moves the selected files to the Trash.
+- Choose and remember a default app inside LeafFiles. Preview files and folder contents in the inspector, and extract selected members of an archive.
+- Rotate, resize or convert images. Merge PDFs, extract pages or rotate selected pages.
+- Apply example rules in Batch Rename, create files from templates, and edit plain text in LeafFiles.
+
+See the [v2.6.0 release notes](docs/releases/v2.6.0.md).
+
+### v2.5.2 update
 
 - Fixed a possible infinite loop when updating folder statistics after storage cleanup; improved open-file checks for large batches.
 - Cleanup now shows a centered progress view and stop control, with results, scan details and history displayed within the page.
@@ -175,7 +184,7 @@ Double-click a local archive, select one and press Space, or choose **Preview ar
 
 A single click only selects a row. Double-click a file or click **Open with default app** to temporarily extract the selected member smaller than 64 MiB. LeafFiles file associations take priority, falling back to the macOS default. Text, Markdown, images, videos and other types retain their original names and extensions. Files at or above 64 MiB, unknown sizes and links show an extract-first prompt. External apps use read-only cached copies that survive closing the archive window; repeated opens in the same preview session reuse the copy. Later file opens reclaim previous sessions older than seven days or above a 512 MiB target. Files handed off during the current app run are protected, so the size target is not a hard cap. Edits are not written back to the archive.
 
-Click **View selected file** or press Space for embedded Quick Look, limited to 64 MiB. Changing selection keeps the current preview; replacing or closing it removes its separate temporary copy. The preview can be collapsed, and **Extract All** offers extraction destinations. Extracting selected members is not supported.
+Click **View selected file** or press Space for embedded Quick Look, limited to 64 MiB. Changing selection keeps the current preview; replacing or closing it removes its separate temporary copy. The preview can be collapsed, and **Extract All** offers extraction destinations. Use **Extract Selected** to save selected files or folders. The destination disk needs space to stage the full archive, and existing files are preserved.
 
 Creating a ZIP excludes `.DS_Store`, `._*` and `__MACOSX` at every level, while preserving `.git`, `.env`, other hidden files, empty folders and symlinks. This also applies to combined selections from different directories; source files are not deleted.
 
@@ -235,7 +244,7 @@ Use the top-left sidebar button to hide or show the entire left menu; expanding 
 
 ### Tabs, search and file organization
 
-- In the active LeafFiles window, use ⌘A to select files, ⌘Delete to move them to Trash after confirmation, ⌘O or ⌘↓ to open, Space to preview, and ⌘C / ⌘V to copy and paste. To move local files or folders, copy them, open the destination and press ⌥⌘V. Text fields retain their editing shortcuts; Android deletion still requires permanent-deletion confirmation.
+- In the active LeafFiles window, use ⌘A to select files, Delete or ⌘Delete to move them to Trash after confirmation, ⌘O or ⌘↓ to open, Space to preview, and ⌘C / ⌘V to copy and paste. To move local files or folders, copy them, open the destination and press ⌥⌘V. Text fields retain their editing shortcuts; Android deletion still requires permanent-deletion confirmation.
 - In icon view, drag a local item to empty space to arrange it freely. Positions are saved per folder in LeafFiles; use the background menu to reset them. Dropping onto a subfolder still moves files, and list view keeps its normal sort order.
 - Sidebar and inspector visibility are remembered. Cut files and folders show a scissors badge until the clipboard changes or the move completes.
 - The tab dropdown handles overflow while keeping the active tab visible. Pin tabs through their context menu or the dropdown. Reopen up to 20 recently closed tabs during the current run with the menu or `⌘⇧T`.

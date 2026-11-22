@@ -18,6 +18,8 @@ final class ArchivePreviewModel: ObservableObject {
     @Published private(set) var preview: ArchiveMemberPreview?
     @Published private(set) var isOpening = false
     @Published private(set) var openError: String?
+    @Published private(set) var isExtractingSelection = false
+    @Published var selectionExtractionMessage: String?
     private let openService: ArchiveOpenService
     private let openFile: @MainActor (URL) async throws -> Void
     private var password: String?
@@ -25,6 +27,8 @@ final class ArchivePreviewModel: ObservableObject {
     private var memberToken: ScanCancellation?
     private var loadTask: Task<Void, Never>?
     private var memberTask: Task<Void, Never>?
+    private var extractionTask: Task<Void, Never>?
+    private var extractionToken: ScanCancellation?
     private(set) var cleanupTask: Task<Void, Never>?
     private var loadID = UUID()
     private var memberID = UUID()
@@ -79,6 +83,30 @@ final class ArchivePreviewModel: ObservableObject {
     }
 
     func dismissOpenError() { openError = nil }
+
+    func extractSelection(_ paths: [String], to destination: URL) {
+        guard !closed, !isExtractingSelection, let contents else { return }
+        let token = ScanCancellation()
+        extractionToken = token
+        let secret = password
+        isExtractingSelection = true
+        extractionTask = Task { [weak self] in
+            do {
+                let result = try await Task.detached(priority: .userInitiated) {
+                    try ArchiveService.extractSelected(paths, from: contents, to: destination, password: secret, cancellation: token)
+                }.value
+                guard let self, !self.closed else { return }
+                self.selectionExtractionMessage = L("archive.selected.success", "已提取 %d 个项目。", result.count)
+            } catch {
+                guard let self, !self.closed else { return }
+                self.selectionExtractionMessage = token.isCancelled ? L("archive.cancelled", "已取消解压") : error.localizedDescription
+            }
+            self?.isExtractingSelection = false
+            self?.extractionTask = nil
+        }
+    }
+
+    func cancelSelectionExtraction() { extractionToken?.cancel() }
 
     private func prepare(_ member: ArchiveMember, password: String?, externally: Bool) {
         guard !closed, let contents, !isPreparing, !isOpening,
@@ -141,15 +169,16 @@ final class ArchivePreviewModel: ObservableObject {
         guard !closed else { return }
         closed = true
         isLoading = false; isPreparing = false; isOpening = false; openError = nil
-        loadToken?.cancel(); memberToken?.cancel()
+        loadToken?.cancel(); memberToken?.cancel(); extractionToken?.cancel()
         password = nil
         preview = nil
         let contents = contents
         self.contents = nil
-        let loading = loadTask, preparing = memberTask
+        let loading = loadTask, preparing = memberTask, extracting = extractionTask
         cleanupTask = Task {
             await loading?.value
             await preparing?.value
+            await extracting?.value
             contents?.close()
         }
     }

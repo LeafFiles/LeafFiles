@@ -1,6 +1,7 @@
 // 文件列表（详细信息表格）、大图标网格、原生图标渲染
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 // MARK: - 原生图标
 
@@ -110,6 +111,7 @@ struct FileTableView: View {
     @ObservedObject var engine: FSEngine
     @ObservedObject var model: BrowserModel
     @Binding var dialog: DialogKind?
+    @State private var isDropTargeted = false
 
     private var selection: Binding<Set<String>> {
         Binding(
@@ -225,7 +227,11 @@ struct FileTableView: View {
         // 双击打开：在底层 NSTableView 上直接挂 doubleAction。
         // 这比依赖 SwiftUI 的 primaryAction 可靠 —— 后者在部分情况下不会触发。
         .background(
-            TableDoubleClickInstaller { table in
+            TableDoubleClickInstaller(marqueeSelection: { rows in
+                model.selectedIDs = Set(rows.compactMap { row in
+                    model.displayedItems.indices.contains(row) ? model.displayedItems[row].id : nil
+                })
+            }) { table in
                 TableColumnPreferences.install(on: table, kind: "files")
                 table.setDraggingSourceOperationMask([.copy, .move], forLocal: true)
                 table.setDraggingSourceOperationMask(.copy, forLocal: false)
@@ -245,7 +251,8 @@ struct FileTableView: View {
             }
             .frame(width: 0, height: 0)
         )
-        .onDrop(of: [.fileURL], delegate: FileListDropDelegate(model: model))
+        .onDrop(of: [.fileURL], delegate: FileListDropDelegate(model: model, isTargeted: $isDropTargeted))
+        .overlay { if isDropTargeted { FileDropTargetOverlay(destination: model.currentDirectory) } }
     }
 
     @ViewBuilder
@@ -294,7 +301,7 @@ struct FileTableView: View {
         // 新建
         add(L("action.newFolder", "新建文件夹"), { dialog.wrappedValue = .newFolder },
             enabled: inFolder, key: "N", symbol: "folder.badge.plus")
-        add(L("action.newFile", "新建文本文档"), { dialog.wrappedValue = .newFile },
+        add(L("processing.text.new", "从模板新建文件"), { dialog.wrappedValue = .newFile },
             enabled: inFolder, symbol: "doc.badge.plus")
         if model.clipboardHasText {
             add(L("action.pasteClipboardAsFile", "把剪贴板文本存成文件"), {
@@ -422,6 +429,8 @@ struct FileIconGridView: View {
     @State private var iconPositions: [String: CGPoint] = [:]
     @State private var scrollOffset: CGPoint = .zero
     @State private var dragState = IconGridDragState()
+    @State private var isDropTargeted = false
+    @State private var dropDestination: URL?
 
     private var canArrange: Bool { !model.isCategoryView && !model.isSearching && model.currentDirectory?.isFileURL == true }
     private var positionKey: String { model.currentDirectory.map { FileItem.canonicalID(for: $0) } ?? "" }
@@ -455,16 +464,23 @@ struct FileIconGridView: View {
 
     var body: some View {
         NativeIconGrid(items: model.displayedItems, selectedIDs: model.selectedIDs, cutIDs: model.cutItemIDs,
+            onSelectionChange: { model.selectedIDs = $0 },
             positions: canArrange ? iconPositions : [:], onScrollOffset: { offset in
                 if scrollOffset != offset { scrollOffset = offset }
             }, locateIndex: locateTarget?.index, locateRequest: locateTarget?.request,
             makeTile: { AnyView(tile(for: $0)) },
-            onNativeDragUpdate: { info in nativeDragUpdate(info) },
-            onNativeDragExit: { nativeDragExit() },
+            onNativeDragItems: { item in model.selectedIDs.contains(item.id) ? model.selectedItems : [item] },
+            onNativeDragUpdate: { info in
+                let operation = nativeDragUpdate(info)
+                dropDestination = dragState.destination ?? model.currentDirectory
+                isDropTargeted = !operation.isEmpty
+                return operation
+            },
+            onNativeDragExit: { isDropTargeted = false; nativeDragExit() },
             onNativeDragPrepare: { info in dragState.capturePrepared(sequence: info.draggingSequenceNumber) },
             onNativeSourceMove: { point in nativeSourceMove(point) },
             onNativeSourceEnd: { nativeSourceEnd() },
-            onNativeDrop: { info, point in nativeDrop(info, point: point) })
+            onNativeDrop: { info, point in isDropTargeted = false; return nativeDrop(info, point: point) })
             .onAppear { DragPreviewGeometry.shared.install(); loadPositions(); selectPendingItem() }
             .onChange(of: positionKey) { _ in loadPositions() }
             .onChange(of: canArrange) { _ in loadPositions() }
@@ -480,6 +496,7 @@ struct FileIconGridView: View {
             }
         .onDrop(of: [.fileURL], delegate: IconGridFallbackDropDelegate(model: model, canArrange: canArrange,
             place: savePosition, state: dragState))
+        .overlay { if isDropTargeted { FileDropTargetOverlay(destination: dropDestination) } }
         // 空白处右键菜单（与详细信息视图一致）
         // 未命中原生滚动容器的空白区域仍使用同一份菜单兜底。
         // 磁贴自己的菜单优先，仍由 FileItemContextMenu 处理。
@@ -606,7 +623,9 @@ struct FileIconGridView: View {
         let local = prepared?.isLocal ?? dragState.isLocal
         let urls = (info.draggingPasteboard.readObjects(forClasses: [NSURL.self],
             options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
-        let sources = urls.isEmpty && local ? SidebarFolderDrop.currentDraggedURL.map { [$0] } ?? [] : urls
+        let sources = urls.isEmpty && local ? SidebarFolderDrop.currentDraggedURLs : urls
+        let incomplete = local && DragPreviewGeometry.shared.usesManagedDrag && !urls.isEmpty
+            && urls.count != SidebarFolderDrop.currentDraggedURLs.count
         TabDiagnostics.shared.record("grid.native.drag.drop", detail: "folder=\(target != nil) count=\(sources.count)")
         dragState.destination = nil
         dragState.isLocal = false
@@ -615,6 +634,10 @@ struct FileIconGridView: View {
         dragState.nativeActive = false
         dragState.nativeExitGeneration &+= 1
         DragPreviewGeometry.shared.restoreSourceIcon()
+        if incomplete {
+            model.statusMessage = L("operation.dropReadFailed", "无法读取拖入的部分文件，请重试。")
+            return false
+        }
         guard !sources.isEmpty else { return false }
         if let target {
             model.dropFiles(sources, from: current, to: target, failed: 0)
@@ -645,6 +668,21 @@ struct FileIconGridView: View {
             .contextMenu {
                 FileItemContextMenu(engine: engine, model: model, dialog: $dialog, item: item)
             }
+    }
+}
+
+private struct FileDropTargetOverlay: View {
+    let destination: URL?
+    var body: some View {
+        ZStack(alignment: .top) {
+            RoundedRectangle(cornerRadius: 6).strokeBorder(Color.accentColor, lineWidth: 2)
+            if let directory = destination {
+                Text(L("drop.destination", "目标：%@", directory.lastPathComponent))
+                    .font(.caption).padding(6).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6)).padding(8)
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }
 
@@ -716,7 +754,7 @@ struct FileBackgroundContextMenu: View {
         }
         Button(WLocalizedString("action.newFolder", comment: "新建文件夹")) { dialog = .newFolder }
             .disabled(!model.supportsDirectoryCreation)
-        Button(WLocalizedString("action.newFile", comment: "新建文本文档")) { dialog = .newFile }
+        Button(L("processing.text.new", "从模板新建文件")) { dialog = .newFile }
             .disabled(!model.supportsDirectoryCreation)
         if model.clipboardHasText {
             Button(WLocalizedString("action.pasteClipboardAsFile", comment: "把剪贴板文本存成文件")) {
@@ -760,6 +798,27 @@ struct FileItemContextMenu: View {
 
     private var singleContextArchive: URL? { sidebarTargets.count == 1 ? archiveTargets.first : nil }
 
+    @ViewBuilder
+    private var processingActions: some View {
+        let targets = sidebarTargets
+        if model.canMutateFiles, !targets.isEmpty, targets.allSatisfy({ !$0.isDirectory && $0.url.isFileURL }) {
+            if targets.allSatisfy({ $0.url.pathExtension.lowercased() == "pdf" }) {
+                Button(targets.count == 1 ? L("processing.pdf.title", "处理 PDF") :
+                       FileProcessingService.PDFAction.merge.title) {
+                    dialog = .processFiles(.pdf(targets.map(\.url)))
+                }
+            }
+            if targets.count == 1, let target = targets.first {
+                if UTType(filenameExtension: target.url.pathExtension)?.conforms(to: .image) == true {
+                    Button(L("processing.image.title", "处理图片")) { dialog = .processFiles(.image(target.url)) }
+                }
+                if EditableTextFile.supports(target.url) {
+                    Button(L("processing.text.edit", "在 LeafFiles 中编辑文本")) { dialog = .editText(target.url) }
+                }
+            }
+        }
+    }
+
     var body: some View {
         Button(WLocalizedString("action.open", comment: "打开")) { model.openSelection() }
         if !sidebarFolders.isEmpty {
@@ -779,7 +838,7 @@ struct FileItemContextMenu: View {
         }
         // 安卓文件在本机没有可用的打开方式，只在本地条目上提供
         if selectedCount <= 1, let item, !AndroidURL.isAndroid(item.url) {
-            Button(WLocalizedString("action.openWith", comment: "打开方式…")) { dialog = .openWith(item) }
+            Button(WLocalizedString("action.openWith", comment: "打开方式…")) { model.requestOpenWith(item) }
             // 仅在本应用内生效的默认打开方式（不改动 macOS 的关联设置）
             Menu(L("assoc.menu", "默认打开方式（仅本应用）")) {
                 if let ext = FileAssociations.key(for: item.url) {
@@ -795,7 +854,7 @@ struct FileItemContextMenu: View {
                         }
                     }
                     Divider()
-                    Button(L("assoc.choose", "选择其它应用…")) { dialog = .openWith(item) }
+                    Button(L("assoc.choose", "选择其它应用…")) { model.requestOpenWith(item, remember: true) }
                     if current != nil {
                         Button(L("assoc.clear", "恢复跟随系统")) {
                             model.clearDefaultApplication(for: item)
@@ -820,6 +879,7 @@ struct FileItemContextMenu: View {
         } else {
             Button(WLocalizedString("action.reveal", comment: "在访达中显示")) { model.revealSelection() }
         }
+        processingActions
         Divider()
         Button(WLocalizedString("action.cut", comment: "剪切")) { model.cutSelectionToClipboard() }
         Button(WLocalizedString("action.copy", comment: "复制")) { model.copySelectionToClipboard() }

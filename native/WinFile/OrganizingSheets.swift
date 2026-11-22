@@ -11,7 +11,25 @@ struct BatchRenameSheet: View {
     @State private var message: String?
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(L("rename.batch", "批量重命名")).font(.headline)
+            HStack {
+                Text(L("rename.batch", "批量重命名")).font(.headline)
+                Spacer()
+                Menu(L("rename.examples", "套用规则示例")) {
+                    Button(L("rename.example.prefix", "加前缀，例如 项目-报告.pdf")) {
+                        rules = BatchRenameRules(prefix: L("rename.example.prefixValue", "项目-"))
+                    }
+                    Button(L("rename.example.replace", "替换字词，例如 草稿 → 定稿")) {
+                        rules = BatchRenameRules(find: L("rename.example.findValue", "草稿"),
+                                                 replacement: L("rename.example.replaceValue", "定稿"))
+                    }
+                    Button(L("rename.example.number", "统一编号，例如 照片-001.jpg")) {
+                        rules = BatchRenameRules(numbered: true, baseName: L("rename.example.baseValue", "照片"))
+                    }
+                    Divider()
+                    Button(L("rename.example.reset", "清空规则")) { rules = BatchRenameRules() }
+                }
+                .fixedSize()
+            }
             HStack {
                 TextField(L("rename.find", "查找文本"), text: $rules.find)
                 TextField(L("rename.replace", "替换为"), text: $rules.replacement)
@@ -28,6 +46,8 @@ struct BatchRenameSheet: View {
                     Stepper(L("rename.digits", "%d 位", rules.digits), value: $rules.digits, in: 1...9)
                 }
             }
+            Text(L("rename.ruleOrder", "依次应用替换、编号、前后缀，扩展名保持原样。"))
+                .font(.caption).foregroundStyle(.secondary)
             Table(plan?.entries ?? []) {
                 TableColumn(L("rename.original", "原名称")) { Text($0.source.lastPathComponent).lineLimit(1).help($0.source.path) }
                 TableColumn(L("rename.proposed", "新名称")) { Text($0.target.lastPathComponent).lineLimit(1) }

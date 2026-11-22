@@ -285,17 +285,13 @@ struct MainView: View {
                     model.createFolder(named: name)
                 }
             case .newFile:
-                TextInputSheet(titleKey: "dialog.newFile.title", defaultText: L("default.newFileName", "未命名.txt")) { name in
-                    model.createTextFile(named: name)
+                if let directory = model.currentDirectory, directory.isFileURL {
+                    NewTextFileSheet(directory: directory)
                 }
-            case .openWith(let item):
-                OpenWithSheet(engine: engine, item: item,
-                              onPick: { appURL in
-                                  model.openSelection(withApplicationAt: appURL)
-                              },
-                              onSetDefault: { app in
-                                  model.setDefaultApplication(app, for: item)
-                              })
+            case .processFiles(let request):
+                FileProcessingSheet(request: request)
+            case .editText(let url):
+                TextFileEditorSheet(url: url)
             case .getInfo:
                 VStack(spacing: 0) {
                     InspectorView(engine: engine, model: model)
@@ -778,7 +774,8 @@ enum DialogKind: Identifiable {
     case rename(FileItem)
     case newFolder
     case newFile
-    case openWith(FileItem)
+    case processFiles(FileProcessingRequest)
+    case editText(URL)
     case help
     case getInfo
 
@@ -791,7 +788,8 @@ enum DialogKind: Identifiable {
         case .rename(let item): return "rename-\(item.id)"
         case .newFolder: return "newFolder"
         case .newFile: return "newFile"
-        case .openWith(let item): return "openWith-\(item.id)"
+        case .processFiles: return "processFiles"
+        case .editText(let url): return "editText-" + url.path
         case .help: return "help"
         case .getInfo: return "getInfo"
         }
@@ -813,16 +811,18 @@ struct StatusBarView: View {
     @ObservedObject var model: BrowserModel
 
     var body: some View {
-        HStack(spacing: 10) {
+        let selected = model.selectedItems
+        return HStack(spacing: 10) {
             Text(model.statusMessage).lineLimit(1).truncationMode(.middle).help(model.statusMessage)
             // 计数统一用 selectedItems（与检查器一致）。
             // 若这里用 selectedIDs，会与检查器出现不同数字：
             // Table 自身维护一套高亮状态，程序化改选时两者可能短暂不一致。
-            if !model.selectedItems.isEmpty {
+            if !selected.isEmpty {
                 Divider().frame(height: 12)
-                Text(String(format: WLocalizedString("status.selected", comment: "已选择"), model.selectedItems.count))
-                if !model.selectionSummary.isEmpty {
-                    Text(model.selectionSummary)
+                Text(String(format: WLocalizedString("status.selected", comment: "已选择"), selected.count))
+                let summary = model.selectionSummary(for: selected)
+                if !summary.isEmpty {
+                    Text(summary)
                 }
             }
             Spacer()

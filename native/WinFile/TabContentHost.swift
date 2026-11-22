@@ -59,6 +59,13 @@ struct TabContentHost: View {
         .sheet(item: $categoryForScanSettings) { category in
             CategoryScanSettingsSheet(preferences: engine.categoryScan, category: category)
         }
+        .sheet(item: $model.openWithRequest, onDismiss: model.showNextOpenWithRequest) { request in
+            OpenWithSheet(engine: engine, request: request, onSetDefault: { app in
+                model.setDefaultApplication(app, for: request.item)
+            }) { app, remember in
+                model.openDocument(request.item, with: app, remember: remember)
+            }
+        }
     }
 
     private var content: some View {

@@ -7,11 +7,13 @@ struct NativeIconGrid: NSViewRepresentable {
     let items: [FileItem]
     let selectedIDs: Set<String>
     var cutIDs: Set<String> = []
+    var onSelectionChange: (Set<String>) -> Void = { _ in }
     var positions: [String: CGPoint] = [:]
     var onScrollOffset: (CGPoint) -> Void = { _ in }
     let locateIndex: Int?
     let locateRequest: UUID?
     let makeTile: (FileItem) -> AnyView
+    var onNativeDragItems: ((FileItem) -> [FileItem])? = nil
     var onNativeDragUpdate: ((NSDraggingInfo) -> NSDragOperation)? = nil
     var onNativeDragExit: (() -> Void)? = nil
     var onNativeDragPrepare: ((NSDraggingInfo) -> Void)? = nil
@@ -28,10 +30,11 @@ struct NativeIconGrid: NSViewRepresentable {
     func updateNSView(_ scroll: NativeIconGridScrollView, context: Context) {
         if let document = scroll.documentView as? NativeIconGridDocumentView {
             document.configureDrop(update: onNativeDragUpdate, exit: onNativeDragExit, prepare: onNativeDragPrepare,
-                                   sourceMove: onNativeSourceMove, sourceEnd: onNativeSourceEnd, perform: onNativeDrop)
+                                   sourceMove: onNativeSourceMove, sourceEnd: onNativeSourceEnd, perform: onNativeDrop,
+                                   dragItems: onNativeDragItems)
         }
         context.coordinator.configure(items: items, selectedIDs: selectedIDs, cutIDs: cutIDs, positions: positions,
-            onScrollOffset: onScrollOffset, environment: context.environment, makeTile: makeTile,
+            onSelectionChange: onSelectionChange, onScrollOffset: onScrollOffset, environment: context.environment, makeTile: makeTile,
             locateIndex: locateIndex, locateRequest: locateRequest)
     }
     static func dismantleNSView(_ scroll: NativeIconGridScrollView, coordinator: Coordinator) {
@@ -61,12 +64,34 @@ struct NativeIconGrid: NSViewRepresentable {
         private var lastLocateRequest: UUID?
         private var pendingLocation: (index: Int, request: UUID)?
         private var layingOut = false
+        private var selectionMonitor: Any?
+        private var selectionTimer: Timer?
+        private var selectionStart: NSPoint?
+        private var selectionWindowPoint = NSPoint.zero
+        private var selectionBase: Set<String> = []
+        private var selectionDragging = false
+        private var pendingSelection: Set<String>?
+        private var marqueeSelection: Set<String>?
+        private var lastPublishedSelection: Set<String> = []
+        private var selectionPublishTimer: Timer?
+        private var keyboardFocusID: String?
+        private var keyboardAnchorID: String?
+        private var keyboardActive = false
+        private var onSelectionChange: (Set<String>) -> Void = { _ in }
+        private let selectionOverlay = MarqueeOverlayView(frame: .zero)
 
         deinit { if let observer { NotificationCenter.default.removeObserver(observer) } }
 
         func attach(_ scroll: NativeIconGridScrollView) {
             self.scroll = scroll
             scroll.onResize = { [weak self] in self?.layoutRows() }
+            selectionOverlay.frame = scroll.contentView.frame
+            selectionOverlay.autoresizingMask = [.width, .height]
+            scroll.addSubview(selectionOverlay, positioned: .above, relativeTo: nil)
+            selectionMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp, .keyDown]) { [weak self] event in
+                guard let self else { return event }
+                return self.handleSelectionEvent(event)
+            }
             scroll.contentView.postsBoundsChangedNotifications = true
             observer = NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification,
                 object: scroll.contentView, queue: .main) { [weak self] _ in
@@ -77,19 +102,25 @@ struct NativeIconGrid: NSViewRepresentable {
         func detach() {
             if let observer { NotificationCenter.default.removeObserver(observer) }
             observer = nil
+            if let selectionMonitor { NSEvent.removeMonitor(selectionMonitor) }
+            selectionMonitor = nil
+            finishSelection()
+            selectionOverlay.removeFromSuperview()
             scroll?.onResize = nil
             removeRows()
             makeTile = nil
             scroll = nil
         }
 
-        func configure(items: [FileItem], selectedIDs: Set<String>, cutIDs: Set<String> = [], positions: [String: CGPoint] = [:], onScrollOffset: @escaping (CGPoint) -> Void = { _ in }, environment: EnvironmentValues,
+        func configure(items: [FileItem], selectedIDs: Set<String>, cutIDs: Set<String> = [], positions: [String: CGPoint] = [:], onSelectionChange: @escaping (Set<String>) -> Void = { _ in }, onScrollOffset: @escaping (CGPoint) -> Void = { _ in }, environment: EnvironmentValues,
                        makeTile: @escaping (FileItem) -> AnyView, locateIndex: Int?, locateRequest: UUID?) {
             let contentChanged = self.items != items
+            if contentChanged { finishSelection(); keyboardFocusID = nil; keyboardAnchorID = nil }
             let positionsChanged = self.positions != positions
             let modeChanged = previousWasFree != !positions.isEmpty
             previousWasFree = !positions.isEmpty
             self.positions = positions
+            self.onSelectionChange = onSelectionChange
             self.onScrollOffset = onScrollOffset
             if contentChanged || positionsChanged || modeChanged { freeLayoutWidth = -1 }
             if modeChanged { removeRows() }
@@ -111,16 +142,193 @@ struct NativeIconGrid: NSViewRepresentable {
             layoutRows()
             if !positions.isEmpty {
                 for (index, host) in hosts where items.indices.contains(index) {
-                    if contentChanged || positionsChanged || styleChanged || oldSelection.contains(items[index].id) != selectedIDs.contains(items[index].id) || oldCutIDs.contains(items[index].id) != cutIDs.contains(items[index].id) {
+                    if contentChanged || positionsChanged || styleChanged || (!selectionDragging && oldSelection.contains(items[index].id) != selectedIDs.contains(items[index].id)) || oldCutIDs.contains(items[index].id) != cutIDs.contains(items[index].id) {
                         host.rootView = freeItemView(index)
                     }
                 }
+                if let marqueeSelection { updateVisibleMarqueeHighlights(marqueeSelection) }
                 return
             }
             for (row, host) in hosts {
                 let indices = metrics.indices(row: row)
-                if styleChanged || indices.contains(where: { oldSelection.contains(items[$0].id) != selectedIDs.contains(items[$0].id) || oldCutIDs.contains(items[$0].id) != cutIDs.contains(items[$0].id) }) {
+                if styleChanged || indices.contains(where: { (!selectionDragging && oldSelection.contains(items[$0].id) != selectedIDs.contains(items[$0].id)) || oldCutIDs.contains(items[$0].id) != cutIDs.contains(items[$0].id) }) {
                     host.rootView = rowView(row)
+                }
+            }
+            if let marqueeSelection { updateVisibleMarqueeHighlights(marqueeSelection) }
+        }
+
+        private func handleSelectionEvent(_ event: NSEvent) -> NSEvent? {
+            guard let scroll, let document = scroll.documentView, let window = scroll.window else { return event }
+            if event.type == .keyDown { return handleKeyboardSelection(event, scroll: scroll) }
+            if event.type == .leftMouseDown, event.window === window {
+                let hit = window.contentView?.hitTest(window.contentView!.convert(event.locationInWindow, from: nil))
+                keyboardActive = hit?.enclosingScrollView === scroll
+            }
+            if selectionStart != nil {
+                if event.type == .leftMouseUp {
+                    selectionWindowPoint = event.locationInWindow
+                    updateSelection()
+                    finishSelection(commit: true)
+                    return nil
+                }
+                guard event.type == .leftMouseDragged else { return event }
+                selectionWindowPoint = event.locationInWindow
+                updateSelection()
+                return nil
+            }
+            guard event.type == .leftMouseDown, event.window === window,
+                  event.clickCount == 1,
+                  let root = window.contentView,
+                  let hit = root.hitTest(root.convert(event.locationInWindow, from: nil)),
+                  hit.enclosingScrollView === scroll else { return event }
+            window.makeFirstResponder(scroll)
+            keyboardFocusID = nil
+            keyboardAnchorID = nil
+            let point = document.convert(event.locationInWindow, from: nil)
+            guard document.visibleRect.contains(point),
+                  EmptyAreaContextMenu.InstallerView.tileMarker(at: event.locationInWindow, in: document) == nil else { return event }
+            selectionStart = point
+            selectionWindowPoint = event.locationInWindow
+            selectionBase = event.modifierFlags.intersection([.command, .shift]).isEmpty ? [] : selectedIDs
+            lastPublishedSelection = selectedIDs
+            selectionDragging = false
+            if selectionBase.isEmpty && !selectedIDs.isEmpty { lastPublishedSelection = []; onSelectionChange([]) }
+            selectionTimer = Timer.scheduledTimer(withTimeInterval: 0.04, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.scrollSelectionIfNeeded() }
+            }
+            if let selectionTimer { RunLoop.main.add(selectionTimer, forMode: .eventTracking) }
+            return nil
+        }
+
+        private func handleKeyboardSelection(_ event: NSEvent, scroll: NativeIconGridScrollView) -> NSEvent? {
+            guard event.window === scroll.window, keyboardActive,
+                  !(scroll.window?.firstResponder is NSTextView), !(scroll.window?.firstResponder is NSTextField),
+                  event.modifierFlags.intersection([.command, .control, .option]).isEmpty,
+                  !items.isEmpty else { return event }
+            let delta: Int
+            switch event.keyCode {
+            case 123: delta = -1
+            case 124: delta = 1
+            case 125: delta = metrics.columns
+            case 126: delta = -metrics.columns
+            default: return event
+            }
+            let current = keyboardFocusID.flatMap { id in items.firstIndex { $0.id == id } }
+                ?? items.firstIndex { selectedIDs.contains($0.id) }
+            let next = current.map { min(items.count - 1, max(0, $0 + delta)) } ?? 0
+            if event.modifierFlags.contains(.shift) {
+                let anchor = keyboardAnchorID.flatMap { id in items.firstIndex { $0.id == id } } ?? current ?? next
+                keyboardAnchorID = items[anchor].id
+                onSelectionChange(Set(items[min(anchor, next)...max(anchor, next)].map(\.id)))
+            } else {
+                keyboardAnchorID = items[next].id
+                onSelectionChange([items[next].id])
+            }
+            keyboardFocusID = items[next].id
+            let frame: NSRect
+            if !positions.isEmpty && freeFrames.indices.contains(next) { frame = freeFrames[next] }
+            else { frame = NSRect(x: 0, y: IconGridMetrics.padding + CGFloat(next / metrics.columns) * IconGridMetrics.pitch,
+                                  width: 1, height: IconGridMetrics.pitch) }
+            scroll.documentView?.scrollToVisible(frame)
+            return nil
+        }
+
+        private func updateSelection() {
+            guard let scroll, let document = scroll.documentView, let start = selectionStart else { return }
+            let point = document.convert(selectionWindowPoint, from: nil)
+            if !selectionDragging && hypot(point.x - start.x, point.y - start.y) < 3 { return }
+            selectionDragging = true
+            let rect = NSRect(x: min(start.x, point.x), y: min(start.y, point.y),
+                              width: abs(point.x - start.x), height: abs(point.y - start.y))
+            selectionOverlay.frame = scroll.contentView.frame
+            selectionOverlay.selectionRect = selectionOverlay.convert(rect, from: document)
+            let width = max(1, scroll.contentSize.width)
+            let cellWidth = max(1, (width - IconGridMetrics.padding * 2 - CGFloat(metrics.columns - 1) * 10) / CGFloat(metrics.columns))
+            var selection = selectionBase
+            let candidates: [Int]
+            if !positions.isEmpty {
+                let first = max(0, Int(floor(rect.minY / IconGridMetrics.pitch)))
+                let last = min(max(0, Int(ceil(freeContentHeight / IconGridMetrics.pitch))), max(first, Int(floor(rect.maxY / IconGridMetrics.pitch))))
+                candidates = first <= last ? Array(Set((first...last).flatMap { freeBuckets[$0] ?? [] })) : []
+            } else {
+                candidates = metrics.candidateRows(intersecting: rect).flatMap { Array(metrics.indices(row: $0)) }
+            }
+            for index in candidates where items.indices.contains(index) {
+                let frame: NSRect
+                if !positions.isEmpty && freeFrames.indices.contains(index) { frame = freeFrames[index] }
+                else {
+                    frame = NSRect(x: IconGridMetrics.padding + CGFloat(index % metrics.columns) * (cellWidth + 10),
+                                   y: IconGridMetrics.padding + CGFloat(index / metrics.columns) * IconGridMetrics.pitch,
+                                   width: cellWidth, height: IconGridMetrics.pitch - 10)
+                }
+                if rect.intersects(frame) { selection.insert(items[index].id) }
+            }
+            guard selection != marqueeSelection else { return }
+            marqueeSelection = selection
+            updateVisibleMarqueeHighlights(selection)
+            guard selection != (pendingSelection ?? lastPublishedSelection) else { return }
+            pendingSelection = selection
+            scheduleSelectionPublish()
+        }
+
+        private func scheduleSelectionPublish() {
+            guard selectionPublishTimer == nil else { return }
+            let timer = Timer(timeInterval: 1.0 / 12.0, repeats: false) { [weak self] _ in
+                MainActor.assumeIsolated { self?.publishSelection() }
+            }
+            selectionPublishTimer = timer
+            RunLoop.main.add(timer, forMode: .common)
+            RunLoop.main.add(timer, forMode: .eventTracking)
+        }
+
+        private func publishSelection() {
+            selectionPublishTimer?.invalidate()
+            selectionPublishTimer = nil
+            guard let selection = pendingSelection else { return }
+            pendingSelection = nil
+            guard selection != lastPublishedSelection else { return }
+            lastPublishedSelection = selection
+            onSelectionChange(selection)
+        }
+
+        private func updateVisibleMarqueeHighlights(_ selection: Set<String>) {
+            func update(_ view: NSView) {
+                if let tile = view as? NativeFileTileView, let id = tile.representedID {
+                    tile.setMarqueeSelected(selection.contains(id))
+                    return
+                }
+                for child in view.subviews where !child.isHidden { update(child) }
+            }
+            for host in hosts.values where !host.isHidden { update(host) }
+        }
+
+        private func scrollSelectionIfNeeded() {
+            guard selectionDragging, let scroll, let document = scroll.documentView else { return }
+            let point = scroll.contentView.convert(selectionWindowPoint, from: nil)
+            let bounds = scroll.contentView.bounds
+            let delta: CGFloat = point.y < bounds.minY + 28 ? -12 : (point.y > bounds.maxY - 28 ? 12 : 0)
+            guard delta != 0 else { return }
+            let y = min(max(0, bounds.origin.y + delta), max(0, document.bounds.height - bounds.height))
+            guard y != bounds.origin.y else { return }
+            scroll.contentView.scroll(to: NSPoint(x: bounds.origin.x, y: y))
+            scroll.reflectScrolledClipView(scroll.contentView)
+            updateSelection()
+        }
+
+        private func finishSelection(commit: Bool = false) {
+            let wasDragging = selectionDragging
+            if commit { publishSelection() }
+            else { selectionPublishTimer?.invalidate(); selectionPublishTimer = nil; pendingSelection = nil }
+            selectionTimer?.invalidate()
+            selectionTimer = nil
+            selectionStart = nil
+            selectionDragging = false
+            marqueeSelection = nil
+            selectionOverlay.selectionRect = nil
+            if commit && wasDragging {
+                for (index, host) in hosts {
+                    host.rootView = positions.isEmpty ? rowView(index) : freeItemView(index)
                 }
             }
         }
@@ -205,6 +413,7 @@ struct NativeIconGrid: NSViewRepresentable {
             while spareHosts.count > 4 { spareHosts.removeLast().removeFromSuperview() }
             (document as? NativeIconGridDocumentView)?.ensureDropSurfaceOnTop()
             (document as? NativeIconGridDocumentView)?.refreshHover()
+            if let marqueeSelection { updateVisibleMarqueeHighlights(marqueeSelection) }
         }
 
         private func layoutRows() {
@@ -268,6 +477,7 @@ struct NativeIconGrid: NSViewRepresentable {
             while spareHosts.count > 4 { spareHosts.removeLast().removeFromSuperview() }
             (document as? NativeIconGridDocumentView)?.ensureDropSurfaceOnTop()
             (document as? NativeIconGridDocumentView)?.refreshHover()
+            if let marqueeSelection { updateVisibleMarqueeHighlights(marqueeSelection) }
         }
     }
 }
@@ -320,6 +530,7 @@ final class NativeIconGridDropSurface: NSView {
 }
 
 final class NativeIconGridScrollView: NSScrollView {
+    override var acceptsFirstResponder: Bool { true }
     var onResize: (() -> Void)?
     fileprivate(set) var createdRowHosts = 0
     override init(frame: NSRect) {
@@ -351,12 +562,14 @@ private final class NativeIconGridDragSource: NSObject, NSDraggingSource {
         context == .withinApplication ? [.move, .copy] : .copy
     }
     func draggingSession(_ session: NSDraggingSession, willBeginAt screenPoint: NSPoint) {
+        TabDiagnostics.shared.record("grid.native.source.began")
         document?.nativeSourceMoved(to: screenPoint)
     }
     func draggingSession(_ session: NSDraggingSession, movedTo screenPoint: NSPoint) {
         document?.nativeSourceMoved(to: screenPoint)
     }
     func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+        TabDiagnostics.shared.record("grid.native.source.ended", detail: "operation=\(operation.rawValue)")
         if ProcessInfo.processInfo.environment["WINFILE_DRAG_GEOMETRY"] == "1" {
             TabDiagnostics.shared.record("grid.source.drag.end", detail: "operation=\(operation.rawValue)")
         }
@@ -380,17 +593,20 @@ final class NativeIconGridDocumentView: NSView {
     private var sourceEnd: (() -> Void)?
     private var activeDragSource: NativeIconGridDragSource?
     private var drop: ((NSDraggingInfo, NSPoint) -> Bool)?
+    private var dragItems: ((FileItem) -> [FileItem])?
     private var acceptsFileDrops = false
 
     func configureDrop(update: ((NSDraggingInfo) -> NSDragOperation)?, exit: (() -> Void)?,
                        prepare: ((NSDraggingInfo) -> Void)?, sourceMove: ((NSPoint?) -> Void)? = nil,
-                       sourceEnd: (() -> Void)? = nil, perform: ((NSDraggingInfo, NSPoint) -> Bool)?) {
+                       sourceEnd: (() -> Void)? = nil, perform: ((NSDraggingInfo, NSPoint) -> Bool)?,
+                       dragItems: ((FileItem) -> [FileItem])? = nil) {
         dragUpdate = update
         dragExit = exit
         dragPrepare = prepare
         self.sourceMove = sourceMove
         self.sourceEnd = sourceEnd
         drop = perform
+        self.dragItems = dragItems
         let enabled = update != nil && perform != nil
         if enabled != acceptsFileDrops {
             acceptsFileDrops = enabled
@@ -436,7 +652,21 @@ final class NativeIconGridDocumentView: NSView {
         let moveImage = image(true)
         draggingItem.setDraggingFrame(NSRect(x: origin.x - 56, y: origin.y - 24, width: 112, height: 76),
                                       contents: plainImage)
-        let session = beginDraggingSession(with: [draggingItem], event: mouseDown, source: source)
+        let others = (dragItems?(item) ?? []).filter { $0.id != item.id }
+        let additionalItems: [NSDraggingItem] = others.compactMap { other in
+            guard let pasteboard = SidebarFolderDrop.additionalNativePasteboardItem(for: other) else { return nil }
+            let dragging = NSDraggingItem(pasteboardWriter: pasteboard)
+            dragging.setDraggingFrame(NSRect(x: origin.x - 56, y: origin.y - 24, width: 112, height: 76), contents: plainImage)
+            return dragging
+        }
+        guard additionalItems.count == others.count else {
+            activeDragSource = nil
+            DragPreviewGeometry.shared.restoreSourceIcon()
+            return false
+        }
+        SidebarFolderDrop.rememberAdditionalSources(others.map(\.url))
+        TabDiagnostics.shared.record("grid.native.source.start", detail: "items=\(additionalItems.count + 1)")
+        let session = beginDraggingSession(with: [draggingItem] + additionalItems, event: mouseDown, source: source)
         session.animatesToStartingPositionsOnCancelOrFail = false
         DragMoveIndicator.shared.nativePreviewUpdater = { [weak self, weak session] scissors in
             DispatchQueue.main.async {

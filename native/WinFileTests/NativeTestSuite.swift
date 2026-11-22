@@ -7,6 +7,9 @@ import AppKit
 import Combine
 import Foundation
 import AVFoundation
+import ImageIO
+import PDFKit
+import UniformTypeIdentifiers
 
 @MainActor
 final class TestReporter {
@@ -32,6 +35,87 @@ private func check(_ name: String, _ condition: Bool, _ detail: @autoclosure () 
 }
 
 enum NativeTestSuite {
+
+    @MainActor
+    private static func testFileProcessing(_ sandbox: URL) throws {
+        let directory = sandbox.appendingPathComponent("file-processing")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        let text = directory.appendingPathComponent("notes.txt")
+        let bom = Data([0xFF, 0xFE])
+        let original = bom + Data("原稿".utf16.flatMap { [UInt8(truncatingIfNeeded: $0), UInt8($0 >> 8)] })
+        try FileProcessingService.writeNew(original, to: text)
+        let opened = try EditableTextFile.open(text)
+        check("编辑器识别带 BOM 的 UTF-16 文本", opened.text == "原稿")
+        try opened.save("修改稿")
+        let saved = try Data(contentsOf: text)
+        check("文本保存保留 BOM 和原编码", saved.starts(with: bom) &&
+              String(data: saved.dropFirst(bom.count), encoding: .utf16LittleEndian) == "修改稿")
+
+        let latest = try EditableTextFile.open(text)
+        try Data("外部写入".utf8).write(to: text)
+        do {
+            try latest.save("旧内容")
+            check("外部修改冲突拦截", false)
+        } catch FileProcessingError.changedText {
+            check("外部修改冲突拦截", try String(contentsOf: text, encoding: .utf8) == "外部写入")
+        }
+        do {
+            try FileProcessingService.writeNew(original, to: text)
+            check("已有输出文件不覆盖", false)
+        } catch {
+            check("已有输出文件不覆盖", try String(contentsOf: text, encoding: .utf8) == "外部写入")
+        }
+
+        let source = directory.appendingPathComponent("sample.png")
+        let image = try requireProcessingValue(CGContext(data: nil, width: 120, height: 80, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        image.clear(CGRect(x: 0, y: 0, width: 120, height: 80))
+        image.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1))
+        image.fill(CGRect(x: 100, y: 0, width: 20, height: 20))
+        let cgImage = try requireProcessingValue(image.makeImage())
+        let writer = try requireProcessingValue(CGImageDestinationCreateWithURL(source as CFURL, UTType.png.identifier as CFString, 1, nil))
+        CGImageDestinationAddImage(writer, cgImage, nil)
+        guard CGImageDestinationFinalize(writer) else { throw FileProcessingError.exportFailed }
+        let rotated = directory.appendingPathComponent("rotated.png")
+        try FileProcessingService.processImage(source, to: rotated, format: .png, longestEdge: 60, rotation: 90)
+        let reader = try requireProcessingValue(CGImageSourceCreateWithURL(rotated as CFURL, nil))
+        let result = try requireProcessingValue(CGImageSourceCreateImageAtIndex(reader, 0, nil))
+        check("图片缩放并旋转后宽高和透明通道正确",
+              result.width == 40 && result.height == 60 && [.first, .last, .premultipliedFirst, .premultipliedLast].contains(result.alphaInfo))
+
+        let pdf1 = directory.appendingPathComponent("one.pdf")
+        let pdf2 = directory.appendingPathComponent("two.pdf")
+        let nsImage = NSImage(cgImage: cgImage, size: NSSize(width: 120, height: 80))
+        for (url, rotations) in [(pdf1, [0, 90]), (pdf2, [180])] {
+            let document = PDFDocument()
+            for angle in rotations {
+                let page = try requireProcessingValue(PDFPage(image: nsImage))
+                page.rotation = angle
+                document.insert(page, at: document.pageCount)
+            }
+            guard document.write(to: url) else { throw FileProcessingError.exportFailed }
+        }
+        let merged = directory.appendingPathComponent("merged.pdf")
+        try FileProcessingService.processPDF([pdf2, pdf1], to: merged, action: .merge, pages: "", rotation: 0)
+        let mergedPDF = try requireProcessingValue(PDFDocument(url: merged))
+        check("PDF 按指定文档顺序合并并保留方向", mergedPDF.pageCount == 3 &&
+              [0, 1, 2].map { mergedPDF.page(at: $0)?.rotation } == [180, 0, 90])
+        let extracted = directory.appendingPathComponent("extracted.pdf")
+        try FileProcessingService.processPDF([merged], to: extracted, action: .extract, pages: "3,1", rotation: 0)
+        let extractedPDF = try requireProcessingValue(PDFDocument(url: extracted))
+        check("PDF 按指定页码顺序提取", extractedPDF.pageCount == 2 &&
+              extractedPDF.page(at: 0)?.rotation == 90 && extractedPDF.page(at: 1)?.rotation == 180)
+        let turned = directory.appendingPathComponent("turned.pdf")
+        try FileProcessingService.processPDF([pdf1], to: turned, action: .rotate, pages: "2", rotation: 90)
+        let turnedPDF = try requireProcessingValue(PDFDocument(url: turned))
+        check("旋转 PDF 只修改指定页并保留原件", turnedPDF.page(at: 0)?.rotation == 0 &&
+              turnedPDF.page(at: 1)?.rotation == 180 && PDFDocument(url: pdf1)?.page(at: 1)?.rotation == 90)
+    }
+
+    private static func requireProcessingValue<T>(_ value: T?) throws -> T {
+        guard let value else { throw FileProcessingError.exportFailed }
+        return value
+    }
 
     static func run() {
         MainActor.assumeIsolated { runOnMain() }
@@ -71,6 +155,14 @@ enum NativeTestSuite {
         print("== WinFile 逻辑层测试 ==")
         print("沙盒目录：\(sandbox.path)")
 
+        check("删除键和 Command-删除键均可删除选择", [UInt16(51), 117].allSatisfy {
+            FileKeyboardShortcuts.isDeleteShortcut(keyCode: $0, modifiers: []) &&
+            FileKeyboardShortcuts.isDeleteShortcut(keyCode: $0, modifiers: .command)
+        })
+        check("其他修饰键不会触发文件删除", !FileKeyboardShortcuts.isDeleteShortcut(keyCode: 51, modifiers: .option) &&
+              !FileKeyboardShortcuts.isDeleteShortcut(keyCode: 51, modifiers: [.command, .shift]) &&
+              !FileKeyboardShortcuts.isDeleteShortcut(keyCode: 0, modifiers: []))
+
         if CommandLine.arguments.contains("--test-operation-progress") {
             do {
                 try testOperations(sandbox)
@@ -91,6 +183,7 @@ enum NativeTestSuite {
         do {
             try testListing(sandbox)
             try testOperations(sandbox)
+            try testFileProcessing(sandbox)
             try testCategoryView(sandbox)
             try testHomeAndThisPC(sandbox)
             try testSidebarQuickAdd(sandbox)
@@ -103,6 +196,7 @@ enum NativeTestSuite {
             try testSorting(sandbox)
             testAppData()
             testDoubleClickMechanism()
+            testTableMarqueeScroll()
             testMouseEventSafety()
             testTileMarkerLookup()
             try testNewTabUsable()
@@ -2166,6 +2260,39 @@ enum NativeTestSuite {
             }
         }
         check("原生网格窗口覆盖窄窗、宽窗、行间位置与末尾全部可见条目", covered)
+        var selectionCoverage = true
+        for width: CGFloat in [50, 400, 900, 1600] {
+            let grid = IconGridMetrics(count: 997, width: width)
+            let cellWidth = max(1, (width - IconGridMetrics.padding * 2 - CGFloat(grid.columns - 1) * 10) / CGFloat(grid.columns))
+            for y: CGFloat in [-150, 0, 14, 119, 120, 130, 131, 900, grid.height - 20, grid.height + 50] {
+                let rect = CGRect(x: 0, y: y, width: width, height: 125)
+                func intersects(_ index: Int) -> Bool {
+                    let frame = CGRect(x: IconGridMetrics.padding + CGFloat(index % grid.columns) * (cellWidth + 10),
+                                       y: IconGridMetrics.padding + CGFloat(index / grid.columns) * IconGridMetrics.pitch,
+                                       width: cellWidth, height: IconGridMetrics.pitch - 10)
+                    return rect.intersects(frame)
+                }
+                let expected = Set((0..<grid.count).filter(intersects))
+                let found = Set(grid.candidateRows(intersecting: rect).flatMap { Array(grid.indices(row: $0)) }.filter(intersects))
+                selectionCoverage = selectionCoverage && expected == found
+            }
+        }
+        let smallDrag = large.candidateRows(intersecting: CGRect(x: 0, y: 5000, width: 300, height: 250))
+        check("框选范围优化保持边界及末行结果正确", selectionCoverage)
+        check("十万项目的局部框选只检查附近行", smallDrag.count <= 4 && smallDrag.count * large.columns < 40)
+        let marquee = MarqueeOverlayView(frame: NSRect(x: 0, y: 0, width: 40, height: 40))
+        marquee.selectionRect = NSRect(x: 5, y: 5, width: 20, height: 20)
+        if let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 40, pixelsHigh: 40,
+                                         bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                                         isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+           let context = NSGraphicsContext(bitmapImageRep: bitmap) {
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = context
+            marquee.draw(marquee.bounds)
+            context.flushGraphics()
+            NSGraphicsContext.restoreGraphicsState()
+            check("框选覆盖层绘制有颜色且不接管点击", (bitmap.colorAt(x: 15, y: 15)?.alphaComponent ?? 0) > 0 && marquee.hitTest(NSPoint(x: 15, y: 15)) == nil)
+        } else { check("框选覆盖层绘制有颜色且不接管点击", false) }
         let engine = FSEngine(); engine.restrictScopeForTesting([root])
         let model = BrowserModel(engine: engine, startDirectory: root)
         waitFor { !model.isBusy }
@@ -3197,6 +3324,48 @@ enum NativeTestSuite {
                                                             point: NSPoint(x: 0, y: lastRowBottom + 40)))
     }
 
+    @MainActor
+    private static func testTableMarqueeScroll() {
+        for rowCount in [3, 40] {
+            let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 400, height: 220))
+            scroll.automaticallyAdjustsContentInsets = false
+            let table = NSTableView(frame: NSRect(x: 0, y: 0, width: 400, height: max(220, rowCount * 27)))
+            table.rowHeight = 26
+            table.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("file")))
+            let source = StubTableSource(rows: rowCount)
+            table.dataSource = source
+            scroll.documentView = table
+            scroll.tile()
+            table.reloadData()
+            scroll.layoutSubtreeIfNeeded()
+            defer { withExtendedLifetime(source) {} }
+
+            let clip = scroll.contentView
+            let initial = clip.constrainBoundsRect(clip.bounds.offsetBy(dx: 0, dy: -10_000))
+            clip.scroll(to: initial.origin)
+            let firstRow = table.convert(table.rect(ofRow: 0), to: scroll)
+            let scrolledAtTop = TableMarqueeSelection.scrollNearEdge(
+                scroll, pointer: NSPoint(x: 100, y: clip.bounds.minY + 1)
+            )
+            check("列表 \(rowCount) 行：向上框选不会把第一行滚进表头",
+                  initial.minY < 0 && !scrolledAtTop && clip.bounds.minY == initial.minY &&
+                  table.convert(table.rect(ofRow: 0), to: scroll) == firstRow)
+
+            let scrolledDown = TableMarqueeSelection.scrollNearEdge(
+                scroll, pointer: NSPoint(x: 100, y: clip.bounds.maxY - 1)
+            )
+            if rowCount == 3 {
+                check("短列表的底边框选不会误触发滚动", !scrolledDown && clip.bounds.minY == initial.minY)
+            } else {
+                check("长列表在底边仍可向下滚动", scrolledDown && clip.bounds.minY > initial.minY)
+                let scrolledBack = TableMarqueeSelection.scrollNearEdge(
+                    scroll, pointer: NSPoint(x: 100, y: clip.bounds.minY + 1)
+                )
+                check("长列表向上滚回表头下方的原始位置", scrolledBack && clip.bounds.minY == initial.minY)
+            }
+        }
+    }
+
     // MARK: - 页签管理
 
     /// 测试用表格数据源
@@ -3923,6 +4092,21 @@ enum NativeTestSuite {
         let appURL = URL(fileURLWithPath: "/System/Applications/TextEdit.app")
         check("测试用应用存在", fm.fileExists(atPath: appURL.path))
 
+        let suiteName = "local.leaffiles.tests.associations.\(UUID().uuidString)"
+        if let defaults = UserDefaults(suiteName: suiteName) {
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            FileAssociations(defaults: defaults).setApplication(appURL, forExtension: "cmd")
+            let reloaded = FileAssociations(defaults: defaults)
+            check("新实例恢复保存的 CMD 打开方式", reloaded.application(for: dir.appendingPathComponent("另一个.CMD"))?.path == appURL.path)
+        }
+
+        let unknown = dir.appendingPathComponent("no-handler.leaffiles\(UUID().uuidString.lowercased())")
+        try Data("fixture".utf8).write(to: unknown)
+        let browser = BrowserModel(engine: FSEngine(), startDirectory: nil)
+        browser.activate(item(unknown))
+        check("没有系统关联的文件请求应用内选择并默认记住", browser.openWithRequest?.item.url.path == unknown.path &&
+              browser.openWithRequest?.needsApplication == true && browser.openWithRequest?.rememberInitially == true)
+
         store.setApplication(appURL, forExtension: "pdf")
         check("设置后能查到应用", store.application(for: pdf)?.path == appURL.path,
               store.application(for: pdf)?.path ?? "nil")
@@ -4619,6 +4803,29 @@ enum NativeTestSuite {
         let original = (try? String(contentsOf: source.appendingPathComponent("a.txt"), encoding: .utf8)) ?? ""
         let restored = (try? String(contentsOf: restoredA, encoding: .utf8)) ?? ""
         check("文件内容一致", original == restored, "原文=\(original) 还原=\(restored)")
+
+        let selectedOut = base.appendingPathComponent("选中提取")
+        try fm.createDirectory(at: selectedOut, withIntermediateDirectories: true)
+        let selectedContents = try ArchiveService.previewContents(archive)
+        defer { selectedContents.close() }
+        let selectedResult = try ArchiveService.extractSelected(["源目录/a.txt", "源目录/子目录"], from: selectedContents,
+                                                                 to: selectedOut, password: nil, cancellation: ScanCancellation())
+        check("仅提取选中的文件和目录", selectedResult.count == 2 &&
+              fm.fileExists(atPath: selectedOut.appendingPathComponent("a.txt").path) &&
+              fm.fileExists(atPath: selectedOut.appendingPathComponent("子目录/中文名.txt").path) &&
+              !fm.fileExists(atPath: selectedOut.appendingPathComponent("带 空格.txt").path))
+        do {
+            _ = try ArchiveService.extractSelected(["源目录/a.txt"], from: selectedContents, to: selectedOut,
+                                                   password: nil, cancellation: ScanCancellation())
+            check("选中提取遇到同名文件不覆盖", false)
+        } catch ArchiveError.alreadyExists { check("选中提取遇到同名文件不覆盖", true) }
+        check("同名冲突保留原文件", (try? String(contentsOf: selectedOut.appendingPathComponent("a.txt"), encoding: .utf8)) == original)
+        let selectedCancel = ScanCancellation(); selectedCancel.cancel()
+        do {
+            _ = try ArchiveService.extractSelected(["源目录/带 空格.txt"], from: selectedContents, to: selectedOut,
+                                                   password: nil, cancellation: selectedCancel)
+            check("选中提取可取消", false)
+        } catch ArchiveError.cancelled { check("选中提取可取消", true) }
 
         // 重名处理：再次压缩应生成不冲突的名字
         let second = try ArchiveService.compress([source], to: output, name: "test")

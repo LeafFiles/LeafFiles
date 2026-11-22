@@ -115,6 +115,8 @@ final class BrowserModel: ObservableObject {
     /// 压缩/解压进度
     @Published var archiveProgress: ArchiveProgress?
     @Published var archivePreviewRequest: ArchivePreviewRequest?
+    @Published var openWithRequest: OpenWithRequest?
+    private var pendingOpenWith: [OpenWithRequest] = []
     private var archiveCancellation: ScanCancellation?
     private var archiveID = UUID()
     private var transferTask: Task<Void, Never>?
@@ -1857,7 +1859,7 @@ final class BrowserModel: ObservableObject {
         }
         // WinFile 内的默认打开方式优先于系统默认。
         // 注意：这只影响本应用，不会改动 macOS 的关联设置。
-        if let app = FileAssociations.shared.application(for: item.url) {
+        if let app = FileAssociations.shared.application(for: original.url) ?? FileAssociations.shared.application(for: item.url) {
             noteOpened(item.url)
             open([item.url], with: app)
             return
@@ -1866,18 +1868,56 @@ final class BrowserModel: ObservableObject {
             archivePreviewRequest = ArchivePreviewRequest(archive: item.url, destination: currentDirectory ?? item.url.deletingLastPathComponent())
             return
         }
-        noteOpened(item.url)
-        if !engine.open(item) { errorMessage = engine.lastError ?? L("error.openFailed", "无法打开") }
+        // Giving an unhandled document to the generic Workspace open API invokes Finder's chooser.
+        if let app = NSWorkspace.shared.urlForApplication(toOpen: item.url) {
+            noteOpened(item.url)
+            open([item.url], with: app)
+        } else {
+            requestOpenWith(original, needsApplication: true)
+        }
     }
 
     /// 用指定应用打开若干文件
     func open(_ urls: [URL], with app: URL) {
         let config = NSWorkspace.OpenConfiguration()
         config.activates = true
+        config.promptsUserIfNeeded = false
         NSWorkspace.shared.open(urls, withApplicationAt: app, configuration: config) { [weak self] _, error in
             if let error {
                 Task { @MainActor in self?.errorMessage = error.localizedDescription }
             }
+        }
+    }
+
+    func requestOpenWith(_ item: FileItem, needsApplication: Bool = false, remember: Bool = false) {
+        guard openWithRequest?.item.id != item.id, !pendingOpenWith.contains(where: { $0.item.id == item.id }) else { return }
+        let request = OpenWithRequest(item: item, needsApplication: needsApplication,
+                                      rememberInitially: needsApplication || remember)
+        if openWithRequest == nil { openWithRequest = request }
+        else { pendingOpenWith.append(request) }
+    }
+
+    func showNextOpenWithRequest() {
+        guard openWithRequest == nil else { return }
+        while !pendingOpenWith.isEmpty {
+            let next = pendingOpenWith.removeFirst()
+            if next.needsApplication, let app = FileAssociations.shared.application(for: next.item.url) {
+                openDocument(next.item, with: app)
+            } else {
+                openWithRequest = next
+                return
+            }
+        }
+    }
+
+    func openDocument(_ original: FileItem, with app: URL, remember: Bool = false) {
+        do {
+            let item = try original.resolvedForOpening()
+            if remember, FileAssociations.key(for: original.url) != nil { setDefaultApplication(app, for: original) }
+            noteOpened(item.url)
+            open([item.url], with: app)
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 
@@ -1914,15 +1954,6 @@ final class BrowserModel: ObservableObject {
             if entries.count == 1, let entry = entries.first { activateAndroid(entry) }
             else { openAndroidFiles(entries) }
         } else { for item in selectedItems { activate(item) } }
-    }
-
-    func openSelection(withApplicationAt appURL: URL) {
-        let config = NSWorkspace.OpenConfiguration()
-        for item in selectedItems {
-            NSWorkspace.shared.open([item.url], withApplicationAt: appURL, configuration: config) { _, error in
-                if let error { Task { @MainActor in self.errorMessage = error.localizedDescription } }
-            }
-        }
     }
 
     func revealSelection() {
@@ -2345,7 +2376,10 @@ final class BrowserModel: ObservableObject {
     }
 
     var selectionSummary: String {
-        let selected = selectedItems
+        selectionSummary(for: selectedItems)
+    }
+
+    func selectionSummary(for selected: [FileItem]) -> String {
         guard !selected.isEmpty else { return "" }
         let bytes = selected.compactMap(\.size).reduce(Int64(0), +)
         if selected.count == 1 {

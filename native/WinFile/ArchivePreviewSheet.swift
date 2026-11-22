@@ -9,9 +9,10 @@ struct ArchivePreviewSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
     @State private var directory = ""
-    @State private var selection: String?
+    @State private var selection: Set<String> = []
     @State private var password = ""
     @State private var choosingDestination = false
+    @State private var choosingSelectedDestination = false
     @State private var showsDetails = false
     @State private var showsPreview = false
     @State private var previewMember: ArchiveMember?
@@ -24,7 +25,7 @@ struct ArchivePreviewSheet: View {
     }
 
     private var entries: [ArchiveBrowserEntry] { model.directoryIndex.rows(in: directory, matching: query) }
-    private var selected: ArchiveBrowserEntry? { entries.first { $0.id == selection } }
+    private var selected: ArchiveBrowserEntry? { selection.count == 1 ? entries.first { selection.contains($0.id) } : nil }
     private var isFiltering: Bool { !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     private func bytes(_ value: Int64?) -> String {
         value.map { FileItem.formatSize($0) } ?? "—"
@@ -66,6 +67,7 @@ struct ArchivePreviewSheet: View {
                         if member.encrypted { Label(L("archive.preview.encrypted", "已加密"), systemImage: "lock") }
                     }
                     Text(L("archive.preview.hint", "双击使用默认应用打开小于 64 MiB 的文件，达到限制或大小未知时请先解压。仅临时解出所选文件，外部打开使用只读缓存，关闭此窗口后仍保留，后续按期限与容量清理；修改不会写回压缩包。空格使用内置预览，关闭后删除预览副本。压缩 TAR 需临时展开中间归档（最大 512 MiB）。"))
+                    Text(L("archive.selected.hint", "提取所选项目会先将整个压缩包解到目标磁盘的临时目录，需要足够空间；目标存在同名项目时不会覆盖。"))
                 }.font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 4)
             }.font(.caption)
             Divider().opacity(0.6)
@@ -83,18 +85,25 @@ struct ArchivePreviewSheet: View {
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer(minLength: 8)
+                if model.isExtractingSelection {
+                    ProgressView().controlSize(.small)
+                    Button(L("button.cancel", "取消")) { model.cancelSelectionExtraction() }
+                } else {
+                    Button(L("archive.selected.extract", "提取所选项目…")) { choosingSelectedDestination = true }
+                        .disabled(selection.isEmpty || model.contents == nil || !browser.canMutateFiles || model.isPreparing)
+                }
                 Menu(L("archive.preview.extractAll", "解压全部")) {
                     Button(L("action.extractHere", "解压到当前文件夹")) { extract(to: request.destination) }
                     Button(L("action.extractFolder", "解压到独立文件夹")) { extract(to: request.destination, createFolder: true) }
                     Button(L("action.extractTo", "解压到…")) { choosingDestination = true }
-                }.fixedSize().disabled(model.contents == nil || !browser.canMutateFiles || model.isLoading || model.isPreparing)
+                }.fixedSize().disabled(model.contents == nil || !browser.canMutateFiles || model.isLoading || model.isPreparing || model.isExtractingSelection)
             }
         }
         .padding(20).background(InterfaceStyle.canvas)
         .frame(minWidth: 720, idealWidth: 1080, maxWidth: 1200, minHeight: 540, idealHeight: 720, maxHeight: 900)
         .onAppear { model.load() }
         .onDisappear { model.close(); password = "" }
-        .onChange(of: query) { _ in selection = nil }
+        .onChange(of: query) { _ in selection = [] }
         .onChange(of: model.needsPassword) { needed in
             if needed && model.contents != nil { showsPreview = true }
         }
@@ -109,6 +118,16 @@ struct ArchivePreviewSheet: View {
                 return nil
             }
         }
+        .sheet(isPresented: $choosingSelectedDestination) {
+            FolderPickerSheet(initialDirectory: request.destination, title: L("archive.chooseDestination", "选择解压文件的保存位置")) { directory in
+                model.extractSelection(entries.filter { selection.contains($0.id) }.map(\.path), to: directory)
+                return nil
+            }
+        }
+        .alert(L("archive.selected.title", "提取所选项目"), isPresented: Binding(
+            get: { model.selectionExtractionMessage != nil }, set: { if !$0 { model.selectionExtractionMessage = nil } })) {
+                Button(L("button.ok", "好")) { model.selectionExtractionMessage = nil }
+            } message: { Text(model.selectionExtractionMessage ?? "") }
     }
 
     private var header: some View {
@@ -182,7 +201,7 @@ struct ArchivePreviewSheet: View {
                 let visible = entries
                 guard visible.indices.contains(row) else { return }
                 let entry = visible[row]
-                selection = entry.id
+                selection = [entry.id]
                 if entry.directory { navigate(to: entry.path) }
                 else { open(entry) }
             }
@@ -239,7 +258,7 @@ struct ArchivePreviewSheet: View {
         }
     }
 
-    private func navigate(to path: String) { directory = path; query = ""; selection = nil }
+    private func navigate(to path: String) { directory = path; query = ""; selection = [] }
     private func unlock() {
         guard !password.isEmpty else { return }
         let secret = password

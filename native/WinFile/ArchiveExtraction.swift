@@ -2,6 +2,51 @@ import Darwin
 import Foundation
 
 extension ArchiveService {
+    /// Extract into private staging first, then publish only the selected paths.
+    static func extractSelected(_ paths: [String], from contents: ArchiveContents, to destination: URL,
+                                password: String?, cancellation: ScanCancellation) throws -> [URL] {
+        let selected = Array(Set(paths)).sorted()
+        guard !selected.isEmpty, destination.isFileURL,
+              selected.allSatisfy({ path in
+                  !path.isEmpty && !path.hasPrefix("/") && !path.split(separator: "/").contains("..") &&
+                  contents.entries.contains { $0.path == path || $0.path.hasPrefix(path + "/") }
+              }) else { throw ArchiveError.invalidListing }
+        guard try ArchiveSourceStamp(contents.archive) == contents.sourceStamp else { throw ArchiveError.archiveChanged }
+        let fm = FileManager.default
+        let work = destination.resolvingSymlinksInPath().appendingPathComponent(".WinFile-selected-\(UUID().uuidString)")
+        try fm.createDirectory(at: work, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        defer { removeStaging(work) }
+        let payload = work.appendingPathComponent("payload")
+        try fm.createDirectory(at: payload, withIntermediateDirectories: false)
+        _ = try extract(contents.archive, to: payload, password: password, cancellation: cancellation)
+        guard try ArchiveSourceStamp(contents.archive) == contents.sourceStamp else { throw ArchiveError.archiveChanged }
+        try checkCancellation(cancellation)
+        let roots = selected.filter { path in !selected.contains { $0 != path && path.hasPrefix($0 + "/") } }
+        var names = Set<String>()
+        let pairs: [(URL, URL)] = try roots.map { path in
+            let source = payload.appendingPathComponent(path)
+            let name = source.lastPathComponent
+            let target = destination.appendingPathComponent(name)
+            guard existsWithoutFollowing(source) else { throw ArchiveError.invalidListing }
+            guard names.insert(name.precomposedStringWithCanonicalMapping.lowercased()).inserted,
+                  !existsWithoutFollowing(target) else { throw ArchiveError.alreadyExists(target) }
+            return (source, target)
+        }
+        var committed: [(URL, URL, FileMoveRecord?)] = []
+        do {
+            for (source, target) in pairs {
+                try checkCancellation(cancellation)
+                try fm.moveItem(at: source, to: target)
+                committed.append((source, target, FileMoveRecord(original: source, current: target)))
+            }
+        } catch {
+            for (source, target, identity) in committed.reversed() where identity?.stillExists == true {
+                try? fm.moveItem(at: target, to: source)
+            }
+            throw error
+        }
+        return committed.map { $0.1 }
+    }
     static var sevenZipURL: URL? {
         let bundled = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/7zz")
         let development = URL(fileURLWithPath: #filePath).deletingLastPathComponent()

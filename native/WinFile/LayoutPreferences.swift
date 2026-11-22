@@ -113,4 +113,11 @@ struct IconGridMetrics {
         let start = min(count, max(0, row * columns))
         return start..<min(count, start + columns)
     }
+    /// Only rows whose cells may touch the selection rectangle need testing.
+    func candidateRows(intersecting rect: CGRect) -> Range<Int> {
+        guard rows > 0, !rect.isEmpty, rect.maxY > Self.padding else { return 0..<0 }
+        let first = max(0, min(rows, Int(floor((rect.minY - Self.padding) / Self.pitch))))
+        let end = max(first, min(rows, Int(floor((rect.maxY - Self.padding) / Self.pitch)) + 1))
+        return first..<end
+    }
 }

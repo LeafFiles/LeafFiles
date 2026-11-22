@@ -7,6 +7,7 @@ enum SidebarFolderDrop {
     private static let localDragType = "local.leaffiles.internal-file-drag"
     private static var draggedURL: URL?
     static var currentDraggedURL: URL? { draggedURL }
+    private(set) static var currentDraggedURLs: [URL] = []
     private static var draggedParent: URL?
     private static var checkedDirectory: URL?
     private static var checkedDirectoryMatches = false
@@ -26,8 +27,13 @@ enum SidebarFolderDrop {
 
     private static func rememberSource(_ url: URL) {
         draggedURL = url
+        currentDraggedURLs = [url]
         draggedParent = url.deletingLastPathComponent().standardizedFileURL
         checkedDirectory = nil
+    }
+
+    static func rememberAdditionalSources(_ urls: [URL]) {
+        currentDraggedURLs.append(contentsOf: urls.filter(\.isFileURL))
     }
 
     @MainActor static func nativePasteboardItem(for item: FileItem) -> NSPasteboardItem? {
@@ -39,6 +45,14 @@ enum SidebarFolderDrop {
         DragPreviewGeometry.shared.begin(url: item.url, customPreview: true,
                                          isDirectory: item.isDirectory, managedSession: true)
         return pasteboardItem
+    }
+
+    static func additionalNativePasteboardItem(for item: FileItem) -> NSPasteboardItem? {
+        guard item.url.isFileURL else { return nil }
+        let result = NSPasteboardItem()
+        guard result.setString(item.url.absoluteString, forType: .fileURL),
+              result.setData(Data(), forType: NSPasteboard.PasteboardType(localDragType)) else { return nil }
+        return result
     }
 
     static func operation(for info: DropInfo, currentDirectory: URL?) -> DropOperation {
@@ -386,11 +400,16 @@ struct FolderTargetDropDelegate: DropDelegate {
 
 struct FileListDropDelegate: DropDelegate {
     let model: BrowserModel
+    @Binding var isTargeted: Bool
+
+    func dropEntered(info: DropInfo) { isTargeted = true }
+    func dropExited(info: DropInfo) { isTargeted = false }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
         DropProposal(operation: SidebarFolderDrop.operation(for: info, currentDirectory: model.currentDirectory))
     }
     func performDrop(info: DropInfo) -> Bool {
+        isTargeted = false
         guard let directory = model.currentDirectory else {
             DragPreviewGeometry.shared.restoreSourceIcon()
             return false

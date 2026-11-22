@@ -4,6 +4,10 @@ import SwiftUI
 /// Local monitor is scoped to this content window and leaves text editing to AppKit.
 struct FileKeyboardShortcuts: NSViewRepresentable {
     let model: BrowserModel
+    static func isDeleteShortcut(keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> Bool {
+        let relevant = modifiers.intersection([.command, .option, .control, .shift])
+        return (keyCode == 51 || keyCode == 117) && (relevant.isEmpty || relevant == .command)
+    }
     func makeNSView(context: Context) -> Installer { Installer() }
     func updateNSView(_ view: Installer, context: Context) { view.model = model }
     final class Installer: NSView {
@@ -35,7 +39,7 @@ struct FileKeyboardShortcuts: NSViewRepresentable {
                     for item in model.selectedItems { model.activate(item) }
                     return nil
                 }
-                if event.keyCode == 51, modifiers == .command, !model.selectedIDs.isEmpty {
+                if FileKeyboardShortcuts.isDeleteShortcut(keyCode: event.keyCode, modifiers: modifiers), !model.selectedIDs.isEmpty {
                     NotificationCenter.default.post(name: .winFileDeleteSelection, object: model.tabManager)
                     return nil
                 }

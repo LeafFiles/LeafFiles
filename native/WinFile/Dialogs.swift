@@ -102,50 +102,81 @@ struct TextInputSheet: View {
 
 struct OpenWithSheet: View {
     @ObservedObject private var localization = Localization.shared
-    @ObservedObject var engine: FSEngine
-    let item: FileItem
-    let onPick: (URL) -> Void
-    /// 设为 WinFile 内的默认打开方式（不影响 macOS 的关联设置）
-    var onSetDefault: ((URL) -> Void)?
     @Environment(\.dismiss) private var dismiss
+    let request: OpenWithRequest
+    let onPick: (URL, Bool) -> Void
+    let onSetDefault: (URL) -> Void
+    private let recommended: [URL]
+    private let systemDefault: URL?
+    private let savedDefault: URL?
     @State private var query = ""
     @State private var selected: URL?
+    @State private var remember: Bool
+    @State private var showAll: Bool
+    @State private var installed: [URL] = []
+    @State private var loadedApplications = false
+    @State private var manualApp: URL?
+    @State private var applicationPath = ""
+    @State private var applicationPathError = false
 
-    private var candidates: [URL] { engine.applications(for: item) }
-    private var defaultApp: URL? { NSWorkspace.shared.urlForApplication(toOpen: item.url) }
+    init(engine: FSEngine, request: OpenWithRequest,
+         onSetDefault: @escaping (URL) -> Void, onPick: @escaping (URL, Bool) -> Void) {
+        self.request = request
+        self.onPick = onPick
+        self.onSetDefault = onSetDefault
+        let item = request.item
+        let saved = FileAssociations.shared.application(for: item.url)
+        let system = NSWorkspace.shared.urlForApplication(toOpen: item.url)
+        let suggested = engine.applications(for: item)
+        savedDefault = saved?.standardizedFileURL
+        systemDefault = system?.standardizedFileURL
+        recommended = suggested
+        _selected = State(initialValue: (saved ?? system)?.standardizedFileURL)
+        _showAll = State(initialValue: suggested.isEmpty && saved == nil)
+        _remember = State(initialValue: request.rememberInitially || (saved == nil && system == nil))
+    }
+
+    private var candidates: [URL] {
+        var seen = Set<String>()
+        return ([savedDefault, manualApp].compactMap { $0 } + recommended + (showAll ? installed : []))
+            .map(\.standardizedFileURL)
+            .filter { url in
+                url.path != Bundle.main.bundleURL.standardizedFileURL.path && seen.insert(url.path).inserted
+            }
+    }
 
     private var filtered: [URL] {
-        let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !needle.isEmpty else { return candidates }
-        return candidates.filter {
-            displayName(for: $0).lowercased().contains(needle)
-                || (Bundle(url: $0)?.bundleIdentifier ?? "").lowercased().contains(needle)
+        return candidates.filter { url in
+            displayName(for: url).localizedStandardContains(needle) ||
+                url.deletingPathExtension().lastPathComponent.localizedStandardContains(needle)
         }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
-                FileIconView(item: item, size: 22)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(String(format: WLocalizedString("dialog.openWith.title", comment: "打开方式"), item.name))
-                        .font(.headline)
-                    if let defaultApp {
-                        Text(String(format: WLocalizedString("dialog.openWith.default", comment: "系统默认"), displayName(for: defaultApp)))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                FileIconView(item: request.item, size: 22)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(L("dialog.openWith.title", "打开方式 — %@", request.item.name)).font(.headline)
+                    if let savedDefault {
+                        Text(L("dialog.openWith.saved", "LeafFiles 默认：%@", displayName(for: savedDefault)))
+                    } else if let systemDefault {
+                        Text(L("dialog.openWith.default", "系统默认：%@", displayName(for: systemDefault)))
+                    } else {
+                        Text(L("dialog.openWith.noDefault", "此文件没有默认应用。请选择一个应用打开。"))
                     }
-                }
+                }.foregroundStyle(.primary)
             }
+            Picker(L("dialog.openWith.scope", "应用范围"), selection: $showAll) {
+                Text(L("dialog.openWith.recommended", "推荐应用")).tag(false)
+                Text(L("dialog.openWith.installed", "所有应用")).tag(true)
+            }.pickerStyle(.segmented)
 
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField(WLocalizedString("dialog.openWith.search", comment: "搜索应用"), text: $query)
-                    .textFieldStyle(.plain)
-            }
-            .padding(6)
-            .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
-            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color(nsColor: .separatorColor)))
+            TextField(L("dialog.openWith.search", "搜索应用…"), text: $query)
+                .textFieldStyle(.roundedBorder)
+                .accessibilityIdentifier("openWith.search")
 
             ScrollView {
                 LazyVStack(spacing: 0) {
@@ -153,78 +184,110 @@ struct OpenWithSheet: View {
                         appRow(app)
                     }
                     if filtered.isEmpty {
-                        Text(WLocalizedString("dialog.openWith.empty", comment: "没有匹配的应用"))
-                            .foregroundStyle(.secondary)
-                            .padding(20)
+                        if showAll && !loadedApplications { ProgressView().padding(20) }
+                        else {
+                            Text(L("dialog.openWith.empty", "没有匹配的应用"))
+                                .foregroundStyle(.secondary).padding(20)
+                        }
                     }
                 }
             }
-            .frame(height: 260)
+            .frame(height: 250)
             .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
             .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color(nsColor: .separatorColor)))
 
+            DisclosureGroup(L("dialog.openWith.applicationPath", "输入其他应用的路径…")) {
+                HStack {
+                    TextField("/Applications/Example.app", text: $applicationPath)
+                        .textFieldStyle(.roundedBorder)
+                    Button(L("dialog.openWith.usePath", "选用此应用")) { chooseApplicationAtPath() }
+                        .disabled(applicationPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }.padding(.top, 4)
+                if applicationPathError {
+                    Text(L("dialog.openWith.invalidApplication", "请输入一个有效的 .app 应用路径。"))
+                        .font(.caption).foregroundStyle(.red)
+                }
+            }
+            if let ext = FileAssociations.key(for: request.item.url) {
+                Toggle(L("dialog.openWith.remember", "记住 .%@ 的打开方式（仅 LeafFiles）", ext), isOn: $remember)
+                    .accessibilityIdentifier("openWith.remember")
+            }
+
             HStack {
                 Spacer()
-                Button(WLocalizedString("button.cancel", comment: "取消")) { dismiss() }
-                Button(L("assoc.setDefault", "设为默认（仅本应用）")) {
-                    if let selected {
-                        onSetDefault?(selected)
+                Button(L("button.cancel", "取消")) { dismiss() }.keyboardShortcut(.cancelAction)
+                if FileAssociations.key(for: request.item.url) != nil {
+                    Button(L("dialog.openWith.saveOnly", "仅设为默认")) {
+                        guard let selected else { return }
+                        onSetDefault(selected)
                         dismiss()
-                    }
+                    }.disabled(selected == nil)
                 }
-                .disabled(selected == nil)
-                    .keyboardShortcut(.cancelAction)
-                Button(WLocalizedString("dialog.openWith.confirm", comment: "用选中的应用打开")) {
-                    if let selected { onPick(selected) }
+                Button(L("action.open", "打开")) {
+                    guard let selected else { return }
+                    onPick(selected, remember)
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
                 .disabled(selected == nil)
+                .accessibilityIdentifier("openWith.confirm")
             }
         }
         .padding(20)
-        .frame(width: 520)
-        .onAppear {
-            selected = defaultApp ?? candidates.first
+        .frame(width: 540)
+        .task {
+            let urls = await Task.detached(priority: .userInitiated) {
+                FileSystemService.listApplications().map(\.url)
+            }.value
+            guard !Task.isCancelled else { return }
+            installed = urls
+            loadedApplications = true
         }
     }
 
+    private func chooseApplicationAtPath() {
+        let path = (applicationPath.trimmingCharacters(in: .whitespacesAndNewlines) as NSString).expandingTildeInPath
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard path.hasPrefix("/"), url.pathExtension.lowercased() == "app",
+              let bundle = Bundle(url: url), let executable = bundle.executableURL,
+              FileManager.default.isExecutableFile(atPath: executable.path),
+              url.path != Bundle.main.bundleURL.standardizedFileURL.path
+        else { applicationPathError = true; return }
+        applicationPathError = false
+        manualApp = url
+        selected = url
+        query = ""
+    }
+
     private func appRow(_ app: URL) -> some View {
-        let isDefault = app == defaultApp
-        let isSelected = app == selected
-        return Button {
-            selected = app
-        } label: {
+        Button { selected = app } label: {
             HStack(spacing: 10) {
                 AppIconView(url: app, size: 26)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(displayName(for: app)).fontWeight(isDefault ? .semibold : .regular)
-                    if let bundleID = Bundle(url: app)?.bundleIdentifier {
-                        Text(bundleID).font(.caption2).foregroundStyle(.secondary)
-                    }
-                }
+                Text(displayName(for: app))
                 Spacer(minLength: 0)
-                if isDefault {
-                    Text(WLocalizedString("dialog.openWith.badge", comment: "默认"))
-                        .font(.caption2)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Capsule().fill(Color.accentColor.opacity(0.18)))
+                if app == savedDefault {
+                    Text(L("dialog.openWith.savedBadge", "LeafFiles 默认")).font(.caption2)
+                } else if app == systemDefault {
+                    Text(L("dialog.openWith.systemBadge", "系统默认")).font(.caption2)
+                }
+                if app == selected {
+                    Image(systemName: "checkmark").foregroundStyle(Color.accentColor)
                 }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(isSelected ? Color.accentColor.opacity(0.16) : .clear)
+            .background(app == selected ? Color.accentColor.opacity(0.16) : .clear)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .id(app.path)
+        .help(app.path)
+        .accessibilityAddTraits(app == selected ? .isSelected : [])
     }
 
     private func displayName(for url: URL) -> String {
-        FileManager.default.displayName(atPath: url.path).replacingOccurrences(of: ".app", with: "")
+        (FileManager.default.displayName(atPath: url.path) as NSString).deletingPathExtension
     }
 }
 
